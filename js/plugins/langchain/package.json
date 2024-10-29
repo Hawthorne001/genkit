@@ -31,7 +31,7 @@
     "@genkit-ai/flow": "workspace:*",
     "zod": "^3.22.4",
     "langchain": "^0.1.36",
-    "@langchain/community": "^0.0.53",
+    "@langchain/community": "^0.3.10",
     "@langchain/core": "^0.1.61",
     "@opentelemetry/api": "^1.7.0"
   },
