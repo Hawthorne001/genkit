@@ -14,34 +14,28 @@
  * limitations under the License.
  */
 
-import { configureGenkit } from '@genkit-ai/core';
 import { devLocalVectorstore } from '@genkit-ai/dev-local-vectorstore';
-import { defineFlow, runFlow } from '@genkit-ai/flow';
-import { textEmbeddingGecko, vertexAI } from '@genkit-ai/vertexai';
-import * as z from 'zod';
+import { textEmbedding004, vertexAI } from '@genkit-ai/vertexai';
+import { genkit, z } from 'genkit';
 import { indexMenu } from './indexer';
 
-configureGenkit({
+export const ai = genkit({
   plugins: [
     vertexAI(),
     devLocalVectorstore([
       {
         indexName: 'menuQA',
-        embedder: textEmbeddingGecko,
+        embedder: textEmbedding004,
       },
     ]),
   ],
-  enableTracingAndMetrics: true,
-  flowStateStore: 'firebase',
-  logLevel: 'debug',
-  traceStore: 'firebase',
 });
 
 const menus = ['./docs/GenkitGrubPub.pdf'];
 
 // genkit flow:run setup
 // genkit flow:run setup '[\"your_awesome_pdf.pdf\", \"your_other_awesome_pdf.pdf\""]'
-export const setup = defineFlow(
+export const setup = ai.defineFlow(
   {
     name: 'setup',
     inputSchema: z.array(z.string()).optional(),
@@ -56,7 +50,7 @@ export const setup = defineFlow(
     await Promise.all(
       documentArr.map(async (document) => {
         console.log(`Indexed ${document}`);
-        return runFlow(indexMenu, document);
+        return indexMenu(document);
       })
     );
   }

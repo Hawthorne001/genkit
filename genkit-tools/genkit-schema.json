@@ -452,31 +452,44 @@
     "GenerateResponseChunk": {
       "type": "object",
       "properties": {
-        "index": {
-          "type": "number"
-        },
         "content": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/Part"
           }
         },
-        "custom": {}
+        "custom": {},
+        "aggregated": {
+          "type": "boolean"
+        },
+        "index": {
+          "type": "number"
+        }
       },
       "required": [
-        "index",
-        "content"
+        "content",
+        "index"
       ],
       "additionalProperties": false
     },
     "GenerateResponse": {
       "type": "object",
       "properties": {
-        "candidates": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Candidate"
-          }
+        "message": {
+          "$ref": "#/$defs/Message"
+        },
+        "finishReason": {
+          "type": "string",
+          "enum": [
+            "stop",
+            "length",
+            "blocked",
+            "other",
+            "unknown"
+          ]
+        },
+        "finishMessage": {
+          "type": "string"
         },
         "latencyMs": {
           "type": "number"
@@ -487,11 +500,14 @@
         "custom": {},
         "request": {
           "$ref": "#/$defs/GenerateRequest"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          }
         }
       },
-      "required": [
-        "candidates"
-      ],
       "additionalProperties": false
     },
     "GenerationCommonConfig": {
@@ -543,6 +559,18 @@
           "type": "number"
         },
         "outputImages": {
+          "type": "number"
+        },
+        "inputVideos": {
+          "type": "number"
+        },
+        "outputVideos": {
+          "type": "number"
+        },
+        "inputAudioFiles": {
+          "type": "number"
+        },
+        "outputAudioFiles": {
           "type": "number"
         },
         "custom": {
@@ -656,6 +684,88 @@
       },
       "additionalProperties": false
     },
+    "ModelRequest": {
+      "type": "object",
+      "properties": {
+        "messages": {
+          "$ref": "#/$defs/GenerateRequest/properties/messages"
+        },
+        "config": {
+          "$ref": "#/$defs/GenerateRequest/properties/config"
+        },
+        "tools": {
+          "$ref": "#/$defs/GenerateRequest/properties/tools"
+        },
+        "output": {
+          "$ref": "#/$defs/GenerateRequest/properties/output"
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GenerateRequest/properties/context/items"
+          }
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "additionalProperties": false
+    },
+    "ModelResponseChunk": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/GenerateResponseChunk/properties/content"
+        },
+        "custom": {
+          "$ref": "#/$defs/GenerateResponseChunk/properties/custom"
+        },
+        "aggregated": {
+          "$ref": "#/$defs/GenerateResponseChunk/properties/aggregated"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "ModelResponse": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/GenerateResponse/properties/message"
+        },
+        "finishReason": {
+          "type": "string",
+          "enum": [
+            "stop",
+            "length",
+            "blocked",
+            "other",
+            "unknown"
+          ]
+        },
+        "finishMessage": {
+          "$ref": "#/$defs/GenerateResponse/properties/finishMessage"
+        },
+        "latencyMs": {
+          "$ref": "#/$defs/GenerateResponse/properties/latencyMs"
+        },
+        "usage": {
+          "$ref": "#/$defs/GenerateResponse/properties/usage"
+        },
+        "custom": {
+          "$ref": "#/$defs/GenerateResponse/properties/custom"
+        },
+        "request": {
+          "$ref": "#/$defs/GenerateResponse/properties/request"
+        }
+      },
+      "required": [
+        "finishReason"
+      ],
+      "additionalProperties": false
+    },
     "Part": {
       "anyOf": [
         {
@@ -729,6 +839,11 @@
           "type": "object",
           "additionalProperties": {},
           "description": "Valid JSON Schema describing the output of the tool."
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "additional metadata for this tool definition"
         }
       },
       "required": [
@@ -815,260 +930,6 @@
       },
       "required": [
         "toolResponse"
-      ],
-      "additionalProperties": false
-    },
-    "FlowError": {
-      "type": "object",
-      "properties": {
-        "error": {
-          "type": "string"
-        },
-        "stacktrace": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "FlowInvokeEnvelopeMessage": {
-      "type": "object",
-      "properties": {
-        "start": {
-          "type": "object",
-          "properties": {
-            "input": {},
-            "labels": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              }
-            }
-          },
-          "additionalProperties": false
-        },
-        "schedule": {
-          "type": "object",
-          "properties": {
-            "input": {},
-            "delay": {
-              "type": "number"
-            }
-          },
-          "additionalProperties": false
-        },
-        "runScheduled": {
-          "type": "object",
-          "properties": {
-            "flowId": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "flowId"
-          ],
-          "additionalProperties": false
-        },
-        "retry": {
-          "type": "object",
-          "properties": {
-            "flowId": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "flowId"
-          ],
-          "additionalProperties": false
-        },
-        "resume": {
-          "type": "object",
-          "properties": {
-            "flowId": {
-              "type": "string"
-            },
-            "payload": {}
-          },
-          "required": [
-            "flowId"
-          ],
-          "additionalProperties": false
-        },
-        "state": {
-          "type": "object",
-          "properties": {
-            "flowId": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "flowId"
-          ],
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "FlowResponse": {
-      "type": "object",
-      "properties": {
-        "response": {
-          "anyOf": [
-            {},
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "FlowResult": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/FlowResponse"
-        },
-        {
-          "$ref": "#/$defs/FlowError"
-        }
-      ]
-    },
-    "FlowStateExecution": {
-      "type": "object",
-      "properties": {
-        "startTime": {
-          "type": "number",
-          "description": "start time in milliseconds since the epoch"
-        },
-        "endTime": {
-          "type": "number",
-          "description": "end time in milliseconds since the epoch"
-        },
-        "traceIds": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "traceIds"
-      ],
-      "additionalProperties": false
-    },
-    "FlowState": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "flowId": {
-          "type": "string"
-        },
-        "input": {},
-        "startTime": {
-          "type": "number",
-          "description": "start time in milliseconds since the epoch"
-        },
-        "cache": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "value": {},
-              "empty": {
-                "type": "boolean",
-                "const": true
-              }
-            },
-            "additionalProperties": false
-          }
-        },
-        "eventsTriggered": {
-          "type": "object",
-          "additionalProperties": {}
-        },
-        "blockedOnStep": {
-          "anyOf": [
-            {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "schema": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "operation": {
-          "$ref": "#/$defs/Operation"
-        },
-        "traceContext": {
-          "type": "string"
-        },
-        "executions": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/FlowStateExecution"
-          }
-        }
-      },
-      "required": [
-        "flowId",
-        "startTime",
-        "cache",
-        "eventsTriggered",
-        "blockedOnStep",
-        "operation",
-        "executions"
-      ],
-      "additionalProperties": false
-    },
-    "Operation": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "server-assigned name, which is only unique within the same service that originally returns it."
-        },
-        "metadata": {
-          "description": "Service-specific metadata associated with the operation. It typically contains progress information and common metadata such as create time."
-        },
-        "done": {
-          "type": "boolean",
-          "default": false,
-          "description": "If the value is false, it means the operation is still in progress. If true, the operation is completed, and either error or response is available."
-        },
-        "result": {
-          "$ref": "#/$defs/FlowResult"
-        },
-        "blockedOnStep": {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "schema": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "name"
-          ],
-          "additionalProperties": false
-        }
-      },
-      "required": [
-        "name"
       ],
       "additionalProperties": false
     }

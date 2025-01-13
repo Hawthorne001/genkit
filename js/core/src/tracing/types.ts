@@ -20,21 +20,6 @@ import { z } from 'zod';
 // Eventually tools will be source of truth for these types (by generating a
 // JSON schema) but until then this file must be manually kept in sync
 
-export interface TraceQuery {
-  limit?: number;
-  continuationToken?: string;
-}
-export interface TraceQueryResponse {
-  traces: TraceData[];
-  continuationToken?: string;
-}
-
-export interface TraceStore {
-  save(traceId, trace: TraceData): Promise<void>;
-  load(traceId: string): Promise<TraceData | undefined>;
-  list(query?: TraceQuery): Promise<TraceQueryResponse>;
-}
-
 export const PathMetadataSchema = z.object({
   path: z.string(),
   status: z.string(),
@@ -44,7 +29,7 @@ export const PathMetadataSchema = z.object({
 export type PathMetadata = z.infer<typeof PathMetadataSchema>;
 
 export const TraceMetadataSchema = z.object({
-  flowName: z.string().optional(),
+  featureName: z.string().optional(),
   paths: z.set(PathMetadataSchema).optional(),
   timestamp: z.number(),
 });

@@ -14,26 +14,26 @@
  * limitations under the License.
  */
 
-import { BaseDataPointSchema, defineEvaluator } from '@genkit-ai/ai/evaluator';
-import { ModelArgument } from '@genkit-ai/ai/model';
+import { Genkit, ModelArgument } from 'genkit';
+import { BaseEvalDataPoint } from 'genkit/evaluator';
 import { Criteria, loadEvaluator } from 'langchain/evaluation';
 import { genkitModel } from './model.js';
 import { GenkitTracer } from './tracing.js';
 
 export function langchainEvaluator(
+  ai: Genkit,
   type: 'labeled_criteria' | 'criteria',
   criteria: Criteria,
   judgeLlm: ModelArgument,
   judgeConfig?: any
 ) {
-  return defineEvaluator(
+  return ai.defineEvaluator(
     {
       name: `langchain/${criteria}`,
       displayName: `${criteria}`,
       definition: `${criteria}: refer to https://js.langchain.com/docs/guides/evaluation`,
-      dataPointType: BaseDataPointSchema,
     },
-    async (datapoint) => {
+    async (datapoint: BaseEvalDataPoint) => {
       try {
         switch (type) {
           case 'labeled_criteria':
@@ -42,7 +42,8 @@ export function langchainEvaluator(
               type as 'labeled_criteria' | 'criteria',
               {
                 criteria,
-                llm: genkitModel(judgeLlm, judgeConfig),
+                // TODO: Figure out why this breaks with TypeScript 5.3
+                llm: genkitModel(ai, judgeLlm, judgeConfig),
                 chainOptions: {
                   callbacks: [new GenkitTracer()],
                 },

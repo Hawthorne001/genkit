@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
-import { defineTool } from '@genkit-ai/ai';
-import * as z from 'zod';
+import { z } from 'genkit';
+import menuData from '../../data/menu.json' assert { type: 'json' };
+import { ai } from '../genkit.js';
 import { MenuItemSchema } from '../types.js';
 
-import menuData from '../../data/menu.json' assert { type: 'json' };
-
-export const menuTool = defineTool(
+export const menuTool = ai.defineTool(
   {
     name: 'todaysMenu',
     description: "Use this tool to retrieve all the items on today's menu",

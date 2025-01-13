@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-import crypto from 'crypto';
 import fs from 'fs';
 import { appendFile, readFile, writeFile } from 'fs/promises';
-import os from 'os';
 import path from 'path';
 import { logger } from '../utils/logger';
 
@@ -61,10 +59,7 @@ export class LocalFileEvalStore implements EvalStore {
   }
 
   async save(evalRun: EvalRun): Promise<void> {
-    const fileName = this.generateFileName(
-      evalRun.key.evalRunId,
-      evalRun.key.actionId
-    );
+    const fileName = this.generateFileName(evalRun.key.evalRunId);
 
     logger.info(
       `Saving EvalRun ${evalRun.key.evalRunId} to ` +
@@ -85,13 +80,10 @@ export class LocalFileEvalStore implements EvalStore {
     );
   }
 
-  async load(
-    evalRunId: string,
-    actionId?: string
-  ): Promise<EvalRun | undefined> {
+  async load(evalRunId: string): Promise<EvalRun | undefined> {
     const filePath = path.resolve(
       this.storeRoot,
-      this.generateFileName(evalRunId, actionId)
+      this.generateFileName(evalRunId)
     );
     if (!fs.existsSync(filePath)) {
       return undefined;
@@ -117,8 +109,8 @@ export class LocalFileEvalStore implements EvalStore {
 
     logger.debug(`Found keys: ${JSON.stringify(keys)}`);
 
-    if (query?.filter?.actionId) {
-      keys = keys.filter((key) => key.actionId === query?.filter?.actionId);
+    if (query?.filter?.actionRef) {
+      keys = keys.filter((key) => key.actionRef === query?.filter?.actionRef);
       logger.debug(`Filtered keys: ${JSON.stringify(keys)}`);
     }
 
@@ -127,12 +119,8 @@ export class LocalFileEvalStore implements EvalStore {
     };
   }
 
-  private generateFileName(evalRunId: string, actionId?: string): string {
-    if (!actionId) {
-      return `${evalRunId}.json`;
-    }
-
-    return `${actionId?.replace('/', '_')}-${evalRunId}.json`;
+  private generateFileName(evalRunId: string): string {
+    return `${evalRunId}.json`;
   }
 
   private getIndexFilePath(): string {
@@ -144,10 +132,6 @@ export class LocalFileEvalStore implements EvalStore {
   }
 
   private generateRootPath(): string {
-    const rootHash = crypto
-      .createHash('md5')
-      .update(process.cwd() || 'unknown')
-      .digest('hex');
-    return path.resolve(os.tmpdir(), `.genkit/${rootHash}/evals`);
+    return path.resolve(process.cwd(), `.genkit/evals`);
   }
 }

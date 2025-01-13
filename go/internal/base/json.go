@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 
 	"github.com/invopop/jsonschema"
 )
@@ -100,4 +101,17 @@ func SchemaAsMap(s *jsonschema.Schema) map[string]any {
 		log.Panicf("failed to unmarshal schema: %v", err)
 	}
 	return m
+}
+
+var jsonMarkdownRegex = regexp.MustCompile("```(json)?((\n|.)*?)```")
+
+// ExtractJSONFromMarkdown returns the contents of the first fenced code block in
+// the markdown text md. If there is none, it returns md.
+func ExtractJSONFromMarkdown(md string) string {
+	// TODO: improve this
+	matches := jsonMarkdownRegex.FindStringSubmatch(md)
+	if matches == nil {
+		return md
+	}
+	return matches[2]
 }

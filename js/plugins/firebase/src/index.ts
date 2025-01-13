@@ -1,4 +1,6 @@
 /**
+ * @license
+ *
  * Copyright 2024 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,71 +16,18 @@
  * limitations under the License.
  */
 
-import { genkitPlugin, isDevEnv, Plugin } from '@genkit-ai/core';
-import { logger } from '@genkit-ai/core/logging';
-import { FirestoreStateStore } from '@genkit-ai/flow';
+/**
+ * @module /
+ */
+
 import {
-  GcpLogger,
-  GcpOpenTelemetry,
-  TelemetryConfig,
+  enableGoogleCloudTelemetry,
+  GcpTelemetryConfigOptions,
 } from '@genkit-ai/google-cloud';
-import { GoogleAuth } from 'google-auth-library';
-import { FirestoreTraceStore } from './firestoreTraceStore.js';
 export { defineFirestoreRetriever } from './firestoreRetriever.js';
 
-interface FirestorePluginParams {
-  projectId?: string;
-  flowStateStore?: {
-    collection?: string;
-    databaseId?: string;
-  };
-  traceStore?: {
-    collection?: string;
-    databaseId?: string;
-  };
-  telemetryConfig?: TelemetryConfig;
-}
-
-export const firebase: Plugin<[FirestorePluginParams] | []> = genkitPlugin(
-  'firebase',
-  async (params?: FirestorePluginParams) => {
-    const authClient = new GoogleAuth();
-    const gcpOptions = {
-      projectId: params?.projectId || (await getProjectId(authClient)),
-      telemetryConfig: params?.telemetryConfig,
-    };
-    return {
-      flowStateStore: {
-        id: 'firestore',
-        value: new FirestoreStateStore(params?.flowStateStore),
-      },
-      traceStore: {
-        id: 'firestore',
-        value: new FirestoreTraceStore(params?.traceStore),
-      },
-      telemetry: {
-        instrumentation: {
-          id: 'firebase',
-          value: new GcpOpenTelemetry(gcpOptions),
-        },
-        logger: {
-          id: 'firebase',
-          value: new GcpLogger(gcpOptions),
-        },
-      },
-    };
-  }
-);
-
-async function getProjectId(authClient: GoogleAuth): Promise<string> {
-  if (isDevEnv()) {
-    return await authClient.getProjectId().catch((err) => {
-      logger.warn(
-        'WARNING: unable to determine Project ID, run "gcloud auth application-default login --project MY_PROJECT_ID"'
-      );
-      return '';
-    });
-  }
-
-  return await authClient.getProjectId();
+export async function enableFirebaseTelemetry(
+  options?: GcpTelemetryConfigOptions
+) {
+  await enableGoogleCloudTelemetry(options);
 }

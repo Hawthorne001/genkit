@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { GENKIT_CLIENT_HEADER } from '@genkit-ai/core';
+import { GENKIT_CLIENT_HEADER } from 'genkit';
 import { GoogleAuth } from 'google-auth-library';
-import { PluginOptions } from '.';
+import { PluginOptions } from './common/types.js';
 
 function endpoint(options: {
   projectId: string;
@@ -31,30 +31,26 @@ interface PredictionResponse<R> {
   predictions: R[];
 }
 
-const ACCESS_TOKEN_TTL = 50 * 60 * 1000; // cache access token for 50 minutes
+export type PredictClient<I = unknown, R = unknown, P = unknown> = (
+  instances: I[],
+  parameters: P
+) => Promise<PredictionResponse<R>>;
 
 export function predictModel<I = unknown, R = unknown, P = unknown>(
   auth: GoogleAuth,
   { location, projectId }: PluginOptions,
   model: string
-) {
-  let accessToken: string | null | undefined;
-  let accessTokenFetchTime = 0;
-
+): PredictClient<I, R, P> {
   return async (
     instances: I[],
-    parameters?: P
+    parameters: P
   ): Promise<PredictionResponse<R>> => {
     const fetch = (await import('node-fetch')).default;
 
-    if (!accessToken || accessTokenFetchTime + ACCESS_TOKEN_TTL < Date.now()) {
-      accessToken = await auth.getAccessToken();
-      accessTokenFetchTime = Date.now();
-    }
-
+    const accessToken = await auth.getAccessToken();
     const req = {
       instances,
-      parameters: parameters || {},
+      parameters,
     };
 
     const response = await fetch(

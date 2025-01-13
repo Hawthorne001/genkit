@@ -16,12 +16,30 @@
 
 import { version } from './__codegen/version.js';
 
+/**
+ * Genkit library version.
+ */
 export const GENKIT_VERSION = version;
-export const GENKIT_CLIENT_HEADER = `genkit-node/${GENKIT_VERSION} gl-node/${process.versions.node}`;
 
+/**
+ * Genkit client header for API calls.
+ */
+export const GENKIT_CLIENT_HEADER = `genkit-node/${GENKIT_VERSION} gl-node/${process.versions.node}`;
+export const GENKIT_REFLECTION_API_SPEC_VERSION = 1;
+
+export { z } from 'zod';
 export * from './action.js';
-export * from './config.js';
+export { getFlowAuth } from './context.js';
 export { GenkitError } from './error.js';
-export * from './flowTypes.js';
-export { defineJsonSchema, defineSchema } from './schema.js';
+export {
+  defineFlow,
+  run,
+  type Flow,
+  type FlowConfig,
+  type FlowFn,
+} from './flow.js';
+export * from './plugin.js';
+export * from './reflection.js';
+export { defineJsonSchema, defineSchema, type JSONSchema } from './schema.js';
 export * from './telemetryTypes.js';
+export * from './utils.js';

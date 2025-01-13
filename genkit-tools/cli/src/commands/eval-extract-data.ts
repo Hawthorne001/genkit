@@ -14,18 +14,17 @@
  * limitations under the License.
  */
 
-import { EnvTypes, EvalInput, TraceData } from '@genkit-ai/tools-common';
+import { EvalInput, TraceData } from '@genkit-ai/tools-common';
 import {
+  generateTestCaseId,
   getEvalExtractors,
   logger,
-  runInRunnerThenStop,
 } from '@genkit-ai/tools-common/utils';
 import { Command } from 'commander';
-import { randomUUID } from 'crypto';
 import { writeFile } from 'fs/promises';
+import { runWithManager } from '../utils/manager-utils';
 
 interface EvalDatasetOptions {
-  env: EnvTypes;
   output?: string;
   maxRows: string;
   label?: string;
@@ -35,7 +34,6 @@ interface EvalDatasetOptions {
 export const evalExtractData = new Command('eval:extractData')
   .description('extract evaludation data for a given flow from the trace store')
   .argument('<flowName>', 'name of the flow to run')
-  .option('--env <env>', 'environment (dev/prod)', 'dev')
   .option(
     '--output <filename>',
     'name of the output file to store the extracted data'
@@ -43,32 +41,27 @@ export const evalExtractData = new Command('eval:extractData')
   .option('--maxRows <maxRows>', 'maximum number of rows', '100')
   .option('--label [label]', 'label flow run in this batch')
   .action(async (flowName: string, options: EvalDatasetOptions) => {
-    await runInRunnerThenStop(async (runner) => {
-      const extractors = await getEvalExtractors(flowName);
-      logger.info(`Extracting trace data '/flow/${flowName}'...`);
+    await runWithManager(async (manager) => {
+      const extractors = await getEvalExtractors(`/flow/${flowName}`);
 
+      logger.info(`Extracting trace data '/flow/${flowName}'...`);
       let dataset: EvalInput[] = [];
       let continuationToken = undefined;
       while (dataset.length < parseInt(options.maxRows)) {
-        const response = await runner.listTraces({
-          env: options.env,
+        const response = await manager.listTraces({
           limit: parseInt(options.maxRows),
           continuationToken,
         });
         continuationToken = response.continuationToken;
         const traces = response.traces;
-        // TODO: This assumes that all the data is in one trace, but it could be across multiple.
-        // We should support this use case similar to how we do in eval-flow-run.ts
         let batch: EvalInput[] = traces
           .map((t) => {
             const rootSpan = Object.values(t.spans).find(
               (s) =>
-                s.attributes['genkit:type'] === 'flow' &&
+                s.attributes['genkit:metadata:subtype'] === 'flow' &&
                 (!options.label ||
-                  s.attributes['genkit:metadata:flow:label:batchRun'] ===
-                    options.label) &&
-                s.attributes['genkit:metadata:flow:name'] === flowName &&
-                s.attributes['genkit:metadata:flow:state'] === 'done'
+                  s.attributes['batchRun'] === options.label) &&
+                s.attributes['genkit:name'] === flowName
             );
             if (!rootSpan) {
               return undefined;
@@ -78,10 +71,10 @@ export const evalExtractData = new Command('eval:extractData')
           .filter((t): t is TraceData => !!t)
           .map((trace) => {
             return {
-              testCaseId: randomUUID(),
+              testCaseId: generateTestCaseId(),
               input: extractors.input(trace),
               output: extractors.output(trace),
-              context: JSON.parse(extractors.context(trace)) as string[],
+              context: toArray(extractors.context(trace)),
               // The trace (t) does not contain the traceId, so we have to pull it out of the
               // spans, de- dupe, and turn it back into an array.
               traceIds: Array.from(
@@ -112,3 +105,7 @@ export const evalExtractData = new Command('eval:extractData')
       }
     });
   });
+
+function toArray(input: any) {
+  return Array.isArray(input) ? input : [input];
+}

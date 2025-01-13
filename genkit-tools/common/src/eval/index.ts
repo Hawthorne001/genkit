@@ -14,13 +14,19 @@
  * limitations under the License.
  */
 
-import { EvalStore } from '../types/eval';
+import { DatasetStore, EvalStore } from '../types/eval';
+import { LocalFileDatasetStore } from './localFileDatasetStore';
 import { LocalFileEvalStore } from './localFileEvalStore';
-export { EvalFlowInput, EvalFlowInputSchema } from '../types/eval';
+export { EvalInferenceInput, EvalInferenceInputSchema } from '../types/eval';
+export * from './evaluate';
 export * from './exporter';
 export * from './parser';
 
 export function getEvalStore(): EvalStore {
   // TODO: This should provide EvalStore, based on tools config.
   return LocalFileEvalStore.getEvalStore();
+}
+
+export function getDatasetStore(): DatasetStore {
+  return LocalFileDatasetStore.getDatasetStore();
 }

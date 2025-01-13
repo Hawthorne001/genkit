@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { __RequestWithAuth } from '@genkit-ai/flow';
+import { RequestWithAuth } from '@genkit-ai/express';
 import { Response } from 'express';
 import { DecodedIdToken, getAuth } from 'firebase-admin/auth';
-import * as z from 'zod';
+import { z } from 'genkit';
 import { FunctionFlowAuth } from './functions.js';
 import { initializeAppIfNecessary } from './helpers.js';
 
@@ -40,7 +40,7 @@ export function firebaseAuth<I extends z.ZodTypeAny>(
   config?: { required: boolean }
 ): FunctionFlowAuth<I> {
   initializeAppIfNecessary();
-  const required = config?.required || true;
+  const required = config?.required ?? true;
   return {
     async policy(auth: unknown | undefined, input: z.infer<I>) {
       // If required is true, then auth will always be set when called from
@@ -72,7 +72,7 @@ export function firebaseAuth<I extends z.ZodTypeAny>(
         return;
       }
 
-      (req as __RequestWithAuth).auth = decoded;
+      (req as RequestWithAuth).auth = decoded;
 
       next();
     },

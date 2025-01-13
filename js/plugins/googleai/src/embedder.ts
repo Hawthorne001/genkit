@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { defineEmbedder, embedderRef } from '@genkit-ai/ai/embedder';
 import { EmbedContentRequest, GoogleGenerativeAI } from '@google/generative-ai';
-import { string, z } from 'zod';
+import { EmbedderReference, Genkit, z } from 'genkit';
+import { embedderRef } from 'genkit/embedder';
 import { PluginOptions } from './index.js';
 
 export const TaskTypeSchema = z.enum([
@@ -28,22 +28,29 @@ export const TaskTypeSchema = z.enum([
 ]);
 export type TaskType = z.infer<typeof TaskTypeSchema>;
 
-export const TextEmbeddingGeckoConfigSchema = z.object({
+export const GeminiEmbeddingConfigSchema = z.object({
   /**
    * The `task_type` parameter is defined as the intended downstream application to help the model
    * produce better quality embeddings.
    **/
   taskType: TaskTypeSchema.optional(),
-  title: string().optional(),
+  title: z.string().optional(),
+  version: z.string().optional(),
+  /**
+   * The `outputDimensionality` parameter allows you to specify the dimensionality of the embedding output.
+   * By default, the model generates embeddings with 768 dimensions. Models such as
+   * `text-embedding-004`, `text-embedding-005`, and `text-multilingual-embedding-002`
+   * allow the output dimensionality to be adjusted between 1 and 768.
+   * By selecting a smaller output dimensionality, users can save memory and storage space, leading to more efficient computations.
+   **/
+  outputDimensionality: z.number().min(1).max(768).optional(),
 });
 
-export type TextEmbeddingGeckoConfig = z.infer<
-  typeof TextEmbeddingGeckoConfigSchema
->;
+export type GeminiEmbeddingConfig = z.infer<typeof GeminiEmbeddingConfigSchema>;
 
 export const textEmbeddingGecko001 = embedderRef({
   name: 'googleai/embedding-001',
-  configSchema: TextEmbeddingGeckoConfigSchema,
+  configSchema: GeminiEmbeddingConfigSchema,
   info: {
     dimensions: 768,
     label: 'Google Gen AI - Text Embedding Gecko (Legacy)',
@@ -53,11 +60,25 @@ export const textEmbeddingGecko001 = embedderRef({
   },
 });
 
+export const textEmbedding004 = embedderRef({
+  name: 'googleai/text-embedding-004',
+  configSchema: GeminiEmbeddingConfigSchema,
+  info: {
+    dimensions: 768,
+    label: 'Google Gen AI - Text Embedding 001',
+    supports: {
+      input: ['text'],
+    },
+  },
+});
+
 export const SUPPORTED_MODELS = {
   'embedding-001': textEmbeddingGecko001,
+  'text-embedding-004': textEmbedding004,
 };
 
-export function textEmbeddingGeckoEmbedder(
+export function defineGoogleAIEmbedder(
+  ai: Genkit,
   name: string,
   options: PluginOptions
 ) {
@@ -70,17 +91,36 @@ export function textEmbeddingGeckoEmbedder(
       'Please pass in the API key or set either GOOGLE_GENAI_API_KEY or GOOGLE_API_KEY environment variable.\n' +
         'For more details see https://firebase.google.com/docs/genkit/plugins/google-genai'
     );
-  const client = new GoogleGenerativeAI(apiKey).getGenerativeModel({
-    model: name,
-  });
-  const embedder = SUPPORTED_MODELS[name];
-  return defineEmbedder(
+  const embedder: EmbedderReference =
+    SUPPORTED_MODELS[name] ??
+    embedderRef({
+      name: name,
+      configSchema: GeminiEmbeddingConfigSchema,
+      info: {
+        dimensions: 768,
+        label: `Google AI - ${name}`,
+        supports: {
+          input: ['text'],
+        },
+      },
+    });
+  const apiModelName = embedder.name.startsWith('googleai/')
+    ? embedder.name.substring('googleai/'.length)
+    : embedder.name;
+  return ai.defineEmbedder(
     {
       name: embedder.name,
-      configSchema: TextEmbeddingGeckoConfigSchema,
+      configSchema: GeminiEmbeddingConfigSchema,
       info: embedder.info!,
     },
     async (input, options) => {
+      const client = new GoogleGenerativeAI(apiKey!).getGenerativeModel({
+        model:
+          options?.version ||
+          embedder.config?.version ||
+          embedder.version ||
+          apiModelName,
+      });
       const embeddings = await Promise.all(
         input.map(async (doc) => {
           const response = await client.embedContent({
@@ -88,8 +128,9 @@ export function textEmbeddingGeckoEmbedder(
             title: options?.title,
             content: {
               role: '',
-              parts: [{ text: doc.text() }],
+              parts: [{ text: doc.text }],
             },
+            outputDimensionality: options?.outputDimensionality,
           } as EmbedContentRequest);
           const values = response.embedding.values;
           return { embedding: values };

@@ -14,180 +14,56 @@
  * limitations under the License.
  */
 
-import { configureGenkit } from '@genkit-ai/core';
-import { firebase } from '@genkit-ai/firebase';
-import {
-  defineFlow,
-  run,
-  runFlow,
-  runMap,
-  startFlowsServer,
-} from '@genkit-ai/flow';
-import {
-  durableFlow,
-  interrupt,
-  scheduleFlow,
-  sleep,
-  waitFor,
-} from '@genkit-ai/flow/experimental';
-import * as z from 'zod';
+import { genkit, z } from 'genkit';
 
-configureGenkit({
-  plugins: [firebase()],
-  flowStateStore: 'firebase',
-  traceStore: 'firebase',
-  enableTracingAndMetrics: true,
-  logLevel: 'debug',
-});
+const ai = genkit({});
 
 /**
  * To run this flow;
  *   genkit flow:run basic "\"hello\""
  */
-export const basic = defineFlow({ name: 'basic' }, async (subject) => {
-  const foo = await run('call-llm', async () => {
+export const basic = ai.defineFlow('basic', async (subject) => {
+  const foo = await ai.run('call-llm', async () => {
     return `subject: ${subject}`;
   });
 
-  return await run('call-llm1', async () => {
+  return await ai.run('call-llm1', async () => {
     return `foo: ${foo}`;
   });
 });
 
-export const parent = defineFlow(
+export const parent = ai.defineFlow(
   { name: 'parent', outputSchema: z.string() },
   async () => {
-    return JSON.stringify(await runFlow(basic, 'foo'));
+    return JSON.stringify(await basic('foo'));
   }
 );
 
-/**
- * To run this flow;
- *   genkit flow:run simpleFanout
- */
-export const simpleFanout = defineFlow(
-  { name: 'simpleFanout', outputSchema: z.string() },
-  async () => {
-    const fanValues = await run('fan-generator', async () => {
-      return ['a', 'b', 'c', 'd'];
-    });
-    const remapped = await runMap('remap', fanValues, async (f) => {
-      return 'foo-' + f;
+export const withInputSchema = ai.defineFlow(
+  { name: 'withInputSchema', inputSchema: z.object({ subject: z.string() }) },
+  async (input) => {
+    const foo = await ai.run('call-llm', async () => {
+      return `subject: ${input.subject}`;
     });
 
-    return remapped.join(', ');
+    return await ai.run('call-llm1', async () => {
+      return `foo: ${foo}`;
+    });
   }
 );
 
-/**
- * To run this flow;
- *   genkit flow:run kitchensink "\"hello\""
- *   genkit flow:resume kitchensink FLOW_ID "\"foo\""
- *   genkit flow:resume kitchensink FLOW_ID "\"bar\""
- *   genkit flow:resume kitchensink FLOW_ID "\"baz\""
- *   genkit flow:resume kitchensink FLOW_ID "\"aux\""
- *   genkit flow:resume kitchensink FLOW_ID "\"final\""
- */
-export const kitchensink = durableFlow(
+export const withContext = ai.defineFlow(
   {
-    name: 'kitchensink',
-    inputSchema: z.string(),
-    outputSchema: z.string(),
+    name: 'withContext',
+    inputSchema: z.object({ subject: z.string() }),
   },
-  async (i) => {
-    const hello = await run('say-hello', async () => {
-      return 'hello';
-    });
-    let fan = await run('fan-generator', async () => {
-      return ['a', 'b', 'c', 'd'];
-    });
-    fan = await Promise.all(
-      fan.map((f) =>
-        run('remap', async () => {
-          return 'z-' + f;
-        })
-      )
-    );
-
-    const fanResult: string[] = [];
-    for (const foo of fan) {
-      fanResult.push(
-        await interrupt('fan', z.string(), async (input) => {
-          return 'fanned-' + foo + '-' + input;
-        })
-      );
-    }
-
-    const something = await interrupt(
-      'wait-for-human-input',
-      z.string(),
-      async (input) => {
-        return (
-          i +
-          ' was the input, then ' +
-          hello +
-          ', then ' +
-          fanResult.join(', ') +
-          ', human said: ' +
-          input
-        );
-      }
-    );
-
-    return something;
-  }
-);
-
-/**
- * To run this flow;
- *   genkit flow:run sleepy
- */
-export const sleepy = durableFlow(
-  {
-    name: 'sleepy',
-    outputSchema: z.string(),
-  },
-  async () => {
-    const before = await run('before', async () => {
-      return 'foo';
-    });
-
-    await sleep('take-a-nap', 10);
-
-    const after = await run('after', async () => {
-      return 'bar';
-    });
-
-    return `${before} ${after}`;
-  }
-);
-
-/**
- * To run this flow;
- *   genkit flow:run waity
- */
-export const waity = durableFlow(
-  {
-    name: 'waity',
-    outputSchema: z.string(),
-  },
-  async () => {
-    const flowOp = await run('start-sub-flow', async () => {
-      return await scheduleFlow(sleepy, undefined);
-    });
-
-    const [op] = await waitFor('wait-for-other-to-complete', sleepy, [
-      flowOp.name,
-    ]);
-
-    return await run('after', async () => {
-      return `unpack sleepy result: ${JSON.stringify(op.result)}`;
-    });
+  async (input, { context }) => {
+    return `subject: ${input.subject}, context: ${JSON.stringify(context)}`;
   }
 );
 
 // genkit flow:run streamy 5 -s
-export const streamy = defineFlow(
+export const streamy = ai.defineFlow(
   {
     name: 'streamy',
     inputSchema: z.number(),
@@ -207,7 +83,7 @@ export const streamy = defineFlow(
 );
 
 // genkit flow:run streamy 5 -s
-export const streamyThrowy = defineFlow(
+export const streamyThrowy = ai.defineFlow(
   {
     name: 'streamyThrowy',
     inputSchema: z.number(),
@@ -233,16 +109,16 @@ export const streamyThrowy = defineFlow(
  * To run this flow;
  *   genkit flow:run throwy "\"hello\""
  */
-export const throwy = defineFlow(
+export const throwy = ai.defineFlow(
   { name: 'throwy', inputSchema: z.string(), outputSchema: z.string() },
   async (subject) => {
-    const foo = await run('call-llm', async () => {
+    const foo = await ai.run('call-llm', async () => {
       return `subject: ${subject}`;
     });
     if (subject) {
       throw new Error(subject);
     }
-    return await run('call-llm', async () => {
+    return await ai.run('call-llm', async () => {
       return `foo: ${foo}`;
     });
   }
@@ -252,33 +128,33 @@ export const throwy = defineFlow(
  * To run this flow;
  *   genkit flow:run throwy2 "\"hello\""
  */
-export const throwy2 = defineFlow(
+export const throwy2 = ai.defineFlow(
   { name: 'throwy2', inputSchema: z.string(), outputSchema: z.string() },
   async (subject) => {
-    const foo = await run('call-llm', async () => {
+    const foo = await ai.run('call-llm', async () => {
       if (subject) {
         throw new Error(subject);
       }
       return `subject: ${subject}`;
     });
-    return await run('call-llm', async () => {
+    return await ai.run('call-llm', async () => {
       return `foo: ${foo}`;
     });
   }
 );
 
-export const flowMultiStepCaughtError = defineFlow(
+export const flowMultiStepCaughtError = ai.defineFlow(
   { name: 'flowMultiStepCaughtError' },
   async (input) => {
     let i = 1;
 
-    const result1 = await run('step1', async () => {
+    const result1 = await ai.run('step1', async () => {
       return `${input} ${i++},`;
     });
 
     let result2 = '';
     try {
-      result2 = await run('step2', async () => {
+      result2 = await ai.run('step2', async () => {
         if (result1) {
           throw new Error('Got an error!');
         }
@@ -286,45 +162,45 @@ export const flowMultiStepCaughtError = defineFlow(
       });
     } catch (e) {}
 
-    return await run('step3', async () => {
+    return await ai.run('step3', async () => {
       return `${result2} ${i++}`;
     });
   }
 );
 
-export const multiSteps = defineFlow(
+export const multiSteps = ai.defineFlow(
   { name: 'multiSteps', inputSchema: z.string(), outputSchema: z.number() },
   async (input) => {
-    const out1 = await run('step1', async () => {
+    const out1 = await ai.run('step1', async () => {
       return `Hello, ${input}! step 1`;
     });
-    await run('step1', async () => {
+    await ai.run('step1', async () => {
       return `Hello2222, ${input}! step 1`;
     });
-    const out2 = await run('step2', out1, async () => {
+    const out2 = await ai.run('step2', out1, async () => {
       return out1 + ' Faf ';
     });
-    const out3 = await run('step3-array', async () => {
+    const out3 = await ai.run('step3-array', async () => {
       return [out2, out2];
     });
-    const out4 = await run('step4-num', async () => {
+    const out4 = await ai.run('step4-num', async () => {
       return out3.join('-()-');
     });
     return 42;
   }
 );
 
-export const largeSteps = defineFlow({ name: 'largeSteps' }, async () => {
-  await run('large-step1', async () => {
+export const largeSteps = ai.defineFlow({ name: 'largeSteps' }, async () => {
+  await ai.run('large-step1', async () => {
     return generateString(100_000);
   });
-  await run('large-step2', async () => {
+  await ai.run('large-step2', async () => {
     return generateString(800_000);
   });
-  await run('large-step3', async () => {
+  await ai.run('large-step3', async () => {
     return generateString(900_000);
   });
-  await run('large-step4', async () => {
+  await ai.run('large-step4', async () => {
     return generateString(999_000);
   });
   return 'something...';
@@ -347,5 +223,3 @@ function generateString(length: number) {
   }
   return str.substring(0, length);
 }
-
-startFlowsServer();

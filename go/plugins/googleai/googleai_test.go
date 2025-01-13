@@ -18,6 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"testing"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/internal"
 	"github.com/firebase/genkit/go/plugins/googleai"
 	"google.golang.org/api/option"
@@ -47,17 +49,22 @@ func TestLive(t *testing.T) {
 	if *testAll {
 		t.Skip("-all provided")
 	}
+	g, err := genkit.New(&genkit.Options{
+		DefaultModel: "googleai/gemini-1.5-flash",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	ctx := context.Background()
-	err := googleai.Init(ctx, &googleai.Config{APIKey: *apiKey})
+	err = googleai.Init(ctx, g, &googleai.Config{APIKey: *apiKey})
 	if err != nil {
 		t.Fatal(err)
 	}
-	embedder := googleai.Embedder("embedding-001")
-	model := googleai.Model("gemini-1.0-pro")
+	embedder := googleai.Embedder(g, "embedding-001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	gablorkenTool := ai.DefineTool("gablorken", "use when need to calculate a gablorken",
+	gablorkenTool := genkit.DefineTool(g, "gablorken", "use when need to calculate a gablorken",
 		func(ctx context.Context, input struct {
 			Value float64
 			Over  float64
@@ -66,9 +73,7 @@ func TestLive(t *testing.T) {
 		},
 	)
 	t.Run("embedder", func(t *testing.T) {
-		res, err := embedder.Embed(ctx, &ai.EmbedRequest{
-			Documents: []*ai.Document{ai.DocumentFromText("yellow banana", nil)},
-		})
+		res, err := ai.Embed(ctx, embedder, ai.WithEmbedText("yellow banana"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -87,26 +92,16 @@ func TestLive(t *testing.T) {
 		}
 	})
 	t.Run("generate", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("Which country was Napoleon the emperor of?")},
-					Role:    ai.RoleUser,
-				},
-			},
-		}
-
-		resp, err := model.Generate(ctx, req, nil)
+		resp, err := genkit.Generate(ctx, g, ai.WithTextPrompt("Which country was Napoleon the emperor of?"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := resp.Candidates[0].Message.Content[0].Text
+		out := resp.Message.Content[0].Text
 		const want = "France"
 		if out != want {
 			t.Errorf("got %q, expecting %q", out, want)
 		}
-		if resp.Request != req {
+		if resp.Request == nil {
 			t.Error("Request field not set properly")
 		}
 		if resp.Usage.InputTokens == 0 || resp.Usage.OutputTokens == 0 || resp.Usage.TotalTokens == 0 {
@@ -114,28 +109,20 @@ func TestLive(t *testing.T) {
 		}
 	})
 	t.Run("streaming", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("Write one paragraph about the North Pole.")},
-					Role:    ai.RoleUser,
-				},
-			},
-		}
-
 		out := ""
 		parts := 0
-		final, err := model.Generate(ctx, req, func(ctx context.Context, c *ai.GenerateResponseChunk) error {
-			parts++
-			out += c.Content[0].Text
-			return nil
-		})
+		final, err := genkit.Generate(ctx, g,
+			ai.WithTextPrompt("Write one paragraph about the North Pole."),
+			ai.WithStreaming(func(ctx context.Context, c *ai.ModelResponseChunk) error {
+				parts++
+				out += c.Content[0].Text
+				return nil
+			}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		out2 := ""
-		for _, p := range final.Candidates[0].Message.Content {
+		for _, p := range final.Message.Content {
 			out2 += p.Text
 		}
 		if out != out2 {
@@ -154,23 +141,15 @@ func TestLive(t *testing.T) {
 		}
 	})
 	t.Run("tool", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("what is a gablorken of 2 over 3.5?")},
-					Role:    ai.RoleUser,
-				},
-			},
-			Tools: []*ai.ToolDefinition{gablorkenTool.Definition()},
-		}
+		resp, err := genkit.Generate(ctx, g,
+			ai.WithTextPrompt("what is a gablorken of 2 over 3.5?"),
+			ai.WithTools(gablorkenTool))
 
-		resp, err := model.Generate(ctx, req, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		out := resp.Candidates[0].Message.Content[0].Text
+		out := resp.Message.Content[0].Text
 		const want = "12.25"
 		if !strings.Contains(out, want) {
 			t.Errorf("got %q, expecting it to contain %q", out, want)
@@ -179,6 +158,12 @@ func TestLive(t *testing.T) {
 }
 
 func TestHeader(t *testing.T) {
+	g, err := genkit.New(&genkit.Options{
+		DefaultModel: "googleai/gemini-1.5-flash",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 	if !*header {
 		t.Skip("skipped; to run, pass -header and don't run the live test")
 	}
@@ -191,11 +176,10 @@ func TestHeader(t *testing.T) {
 	defer server.Close()
 
 	opts := []option.ClientOption{option.WithHTTPClient(server.Client()), option.WithEndpoint(server.URL)}
-	if err := googleai.Init(ctx, &googleai.Config{APIKey: "x", ClientOptions: opts}); err != nil {
+	if err := googleai.Init(ctx, g, &googleai.Config{APIKey: "x", ClientOptions: opts}); err != nil {
 		t.Fatal(err)
 	}
-	model := googleai.Model("gemini-1.0-pro")
-	_, _ = model.Generate(ctx, ai.NewGenerateRequest(nil, ai.NewTextMessage(ai.RoleUser, "hi")), nil)
+	_, _ = genkit.Generate(ctx, g, ai.WithTextPrompt("hi"))
 	got := header.Get("x-goog-api-client")
 	want := regexp.MustCompile(fmt.Sprintf(`\bgenkit-go/%s\b`, internal.Version))
 	if !want.MatchString(got) {

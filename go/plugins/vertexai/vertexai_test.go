@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/vertexai"
 )
 
@@ -36,15 +37,19 @@ func TestLive(t *testing.T) {
 		t.Skipf("no -projectid provided")
 	}
 	ctx := context.Background()
-	const modelName = "gemini-1.0-pro"
-	err := vertexai.Init(ctx, &vertexai.Config{ProjectID: *projectID, Location: *location})
+	g, err := genkit.New(&genkit.Options{
+		DefaultModel: "vertexai/gemini-1.5-flash",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	model := vertexai.Model(modelName)
-	embedder := vertexai.Embedder("textembedding-gecko@003")
+	err = vertexai.Init(ctx, g, &vertexai.Config{ProjectID: *projectID, Location: *location})
+	if err != nil {
+		t.Fatal(err)
+	}
+	embedder := vertexai.Embedder(g, "textembedding-gecko@003")
 
-	gablorkenTool := ai.DefineTool("gablorken", "use when need to calculate a gablorken",
+	gablorkenTool := genkit.DefineTool(g, "gablorken", "use when need to calculate a gablorken",
 		func(ctx context.Context, input struct {
 			Value float64
 			Over  float64
@@ -53,25 +58,15 @@ func TestLive(t *testing.T) {
 		},
 	)
 	t.Run("model", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("Which country was Napoleon the emperor of?")},
-					Role:    ai.RoleUser,
-				},
-			},
-		}
-
-		resp, err := model.Generate(ctx, req, nil)
+		resp, err := genkit.Generate(ctx, g, ai.WithTextPrompt("Which country was Napoleon the emperor of?"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		out := resp.Candidates[0].Message.Content[0].Text
+		out := resp.Message.Content[0].Text
 		if !strings.Contains(out, "France") {
 			t.Errorf("got \"%s\", expecting it would contain \"France\"", out)
 		}
-		if resp.Request != req {
+		if resp.Request == nil {
 			t.Error("Request field not set properly")
 		}
 		if resp.Usage.InputTokens == 0 || resp.Usage.OutputTokens == 0 || resp.Usage.TotalTokens == 0 {
@@ -79,31 +74,22 @@ func TestLive(t *testing.T) {
 		}
 	})
 	t.Run("streaming", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("Write one paragraph about the Golden State Warriors.")},
-					Role:    ai.RoleUser,
-				},
-			},
-		}
-
 		out := ""
 		parts := 0
-		model := vertexai.Model(modelName)
-		final, err := model.Generate(ctx, req, func(ctx context.Context, c *ai.GenerateResponseChunk) error {
-			parts++
-			for _, p := range c.Content {
-				out += p.Text
-			}
-			return nil
-		})
+		final, err := genkit.Generate(ctx, g,
+			ai.WithTextPrompt("Write one paragraph about the Golden State Warriors."),
+			ai.WithStreaming(func(ctx context.Context, c *ai.ModelResponseChunk) error {
+				parts++
+				for _, p := range c.Content {
+					out += p.Text
+				}
+				return nil
+			}))
 		if err != nil {
 			t.Fatal(err)
 		}
 		out2 := ""
-		for _, p := range final.Candidates[0].Message.Content {
+		for _, p := range final.Message.Content {
 			out2 += p.Text
 		}
 		if out != out2 {
@@ -123,34 +109,23 @@ func TestLive(t *testing.T) {
 		}
 	})
 	t.Run("tool", func(t *testing.T) {
-		req := &ai.GenerateRequest{
-			Candidates: 1,
-			Messages: []*ai.Message{
-				{
-					Content: []*ai.Part{ai.NewTextPart("what is a gablorken of 2 over 3.5?")},
-					Role:    ai.RoleUser,
-				},
-			},
-			Tools: []*ai.ToolDefinition{gablorkenTool.Definition()},
-		}
-
-		resp, err := model.Generate(ctx, req, nil)
+		resp, err := genkit.Generate(ctx, g,
+			ai.WithTextPrompt("what is a gablorken of 2 over 3.5?"),
+			ai.WithTools(gablorkenTool))
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		out := resp.Candidates[0].Message.Content[0].Text
+		out := resp.Message.Content[0].Text
 		if !strings.Contains(out, "12.25") {
 			t.Errorf("got %s, expecting it to contain \"12.25\"", out)
 		}
 	})
 	t.Run("embedder", func(t *testing.T) {
-		res, err := embedder.Embed(ctx, &ai.EmbedRequest{
-			Documents: []*ai.Document{
-				ai.DocumentFromText("time flies like an arrow", nil),
-				ai.DocumentFromText("fruit flies like a banana", nil),
-			},
-		})
+		res, err := ai.Embed(ctx, embedder, ai.WithEmbedDocs(
+			ai.DocumentFromText("time flies like an arrow", nil),
+			ai.DocumentFromText("fruit flies like a banana", nil),
+		))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -18,10 +18,11 @@ import * as trpcExpress from '@trpc/server/adapters/express';
 import * as bodyParser from 'body-parser';
 import * as clc from 'colorette';
 import express, { ErrorRequestHandler } from 'express';
-import open from 'open';
+import { Server } from 'http';
 import os from 'os';
 import path from 'path';
-import { Runner } from '../runner/runner';
+import { GenkitToolsError } from '../manager';
+import { RuntimeManager } from '../manager/manager';
 import { logger } from '../utils/logger';
 import { toolsPackage } from '../utils/package';
 import { downloadAndExtractUiAssets } from '../utils/ui-assets';
@@ -42,28 +43,17 @@ const API_BASE_PATH = '/api';
 /**
  * Starts up the Genkit Tools server which includes static files for the UI and the Tools API.
  */
-export function startServer(
-  runner: Runner,
-  headless: boolean,
-  port: number,
-  openBrowser: boolean
-): Promise<void> {
-  let serverEnder: (() => void) | undefined = undefined;
-  const enderPromise = new Promise<void>((resolver) => {
-    serverEnder = resolver;
-  });
-
+export function startServer(manager: RuntimeManager, port: number) {
+  let server: Server;
   const app = express();
 
-  if (!headless) {
-    // Download UI assets from public GCS bucket and serve locally
-    downloadAndExtractUiAssets({
-      fileUrl: UI_ASSETS_ZIP_GCS_PATH,
-      extractPath: UI_ASSETS_ROOT,
-      zipFileName: UI_ASSETS_ZIP_FILE_NAME,
-    });
-    app.use(express.static(UI_ASSETS_SERVE_PATH));
-  }
+  // Download UI assets from public GCS bucket and serve locally
+  downloadAndExtractUiAssets({
+    fileUrl: UI_ASSETS_ZIP_GCS_PATH,
+    extractPath: UI_ASSETS_ROOT,
+    zipFileName: UI_ASSETS_ZIP_FILE_NAME,
+  });
+  app.use(express.static(UI_ASSETS_SERVE_PATH));
 
   // tRPC doesn't support simple streaming mutations (https://github.com/trpc/trpc/issues/4477).
   // Don't want a separate WebSocket server for subscriptions - https://trpc.io/docs/subscriptions.
@@ -75,7 +65,7 @@ export function startServer(
   });
 
   app.post('/api/streamAction', bodyParser.json(), async (req, res) => {
-    const { key, input } = req.body;
+    const { key, input, context } = req.body;
     res.writeHead(200, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Headers': 'Content-Type',
@@ -83,11 +73,60 @@ export function startServer(
       'Transfer-Encoding': 'chunked',
     });
 
-    const result = await runner.runAction({ key, input }, (chunk) => {
-      res.write(JSON.stringify(chunk) + '\n');
-    });
-    res.write(JSON.stringify(result));
+    try {
+      const result = await manager.runAction(
+        { key, input, context },
+        (chunk) => {
+          res.write(JSON.stringify(chunk) + '\n');
+        }
+      );
+      res.write(JSON.stringify(result));
+    } catch (err) {
+      res.write(JSON.stringify({ error: (err as GenkitToolsError).data }));
+    }
     res.end();
+  });
+
+  // General purpose endpoint for Server Side Events to the Developer UI.
+  // Currently only event type "current-time" is supported, which notifies the
+  // subsriber of the currently selected Genkit Runtime (typically most recent).
+  app.get('/api/sse', async (_, res) => {
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache',
+      'Content-Type': 'text/event-stream',
+      Connection: 'keep-alive',
+    });
+
+    // On connection, immediately send the "current" runtime (i.e. most recent)
+    const runtimeInfo = JSON.stringify(manager.getMostRecentRuntime() ?? {});
+    res.write('event: current-runtime\n');
+    res.write(`data: ${runtimeInfo}\n\n`);
+
+    // When runtimes are added or removed, notify the Dev UI which runtime
+    // is considered "current" (i.e. most recent). In the future, we could send
+    // updates and let the developer decide which to use.
+    manager.onRuntimeEvent(() => {
+      const runtimeInfo = JSON.stringify(manager.getMostRecentRuntime() ?? {});
+      res.write('event: current-runtime\n');
+      res.write(`data: ${runtimeInfo}\n\n`);
+    });
+
+    res.on('close', () => {
+      res.end();
+    });
+  });
+
+  app.get('/api/__health', (_, res) => {
+    res.status(200).send('');
+  });
+
+  app.post('/api/__quitquitquit', (_, res) => {
+    logger.info('Shutting down tools API');
+    res.status(200).send('Server is shutting down');
+    server.close(() => {
+      process.exit(0);
+    });
   });
 
   // Endpoints for CLI control
@@ -100,9 +139,13 @@ export function startServer(
       else next();
     },
     trpcExpress.createExpressMiddleware({
-      router: TOOLS_SERVER_ROUTER(runner),
+      router: TOOLS_SERVER_ROUTER(manager),
     })
   );
+
+  app.all('*', (_, res) => {
+    res.status(200).sendFile('/', { root: UI_ASSETS_SERVE_PATH });
+  });
 
   const errorHandler: ErrorRequestHandler = (
     error,
@@ -119,29 +162,12 @@ export function startServer(
   };
   app.use(errorHandler);
 
-  // serve angular paths
-  app.all('*', (req, res) => {
-    res.status(200).sendFile('/', { root: UI_ASSETS_SERVE_PATH });
+  server = app.listen(port, () => {
+    const uiUrl = 'http://localhost:' + port;
+    logger.info(`${clc.green(clc.bold('Genkit Developer UI:'))} ${uiUrl}`);
   });
 
-  app.listen(port, () => {
-    logger.info(`Genkit Tools API: http://localhost:${port}/api`);
-    if (!headless) {
-      const uiUrl = 'http://localhost:' + port;
-      runner
-        .waitUntilHealthy()
-        .then(() => {
-          logger.info(`${clc.green(clc.bold('Genkit Tools UI:'))} ${uiUrl}`);
-          if (openBrowser) {
-            open(uiUrl);
-          }
-        })
-        .catch((e) => {
-          logger.error(e.message);
-          if (serverEnder) serverEnder();
-        });
-    }
+  return new Promise<void>((resolve) => {
+    server.once('close', resolve);
   });
-
-  return enderPromise;
 }

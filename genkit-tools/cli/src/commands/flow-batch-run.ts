@@ -14,18 +14,10 @@
  * limitations under the License.
  */
 
-import {
-  FlowInvokeEnvelopeMessage,
-  FlowState,
-  Operation,
-} from '@genkit-ai/tools-common';
-import {
-  logger,
-  runInRunnerThenStop,
-  waitForFlowToComplete,
-} from '@genkit-ai/tools-common/utils';
+import { logger } from '@genkit-ai/tools-common/utils';
 import { Command } from 'commander';
 import { readFile, writeFile } from 'fs/promises';
+import { runWithManager } from '../utils/manager-utils';
 
 interface FlowBatchRunOptions {
   wait?: boolean;
@@ -55,41 +47,34 @@ export const flowBatchRun = new Command('flow:batchRun')
       fileName: string,
       options: FlowBatchRunOptions
     ) => {
-      await runInRunnerThenStop(async (runner) => {
+      await runWithManager(async (manager) => {
         const inputData = JSON.parse(await readFile(fileName, 'utf8')) as any[];
-        if (!Array.isArray(inputData)) {
-          throw new Error('batch input data must be an array');
+        let input = inputData;
+        if (inputData.length === 0) {
+          throw new Error('batch input data must be a non-empty array');
+        }
+        if (Object.hasOwn(inputData[0], 'input')) {
+          // If object has "input" field, use that instead.
+          input = inputData.map((d) => d.input);
         }
 
-        const outputValues = [] as { input: any; output: Operation }[];
-        for (const data of inputData) {
+        const outputValues = [] as { input: any; output: any }[];
+        for (const data of input) {
           logger.info(`Running '/flow/${flowName}'...`);
-          let state = (
-            await runner.runAction({
-              key: `/flow/${flowName}`,
-              input: {
-                start: {
-                  input: data,
-                  labels: options.label
-                    ? { batchRun: options.label }
-                    : undefined,
-                  auth: options.auth ? JSON.parse(options.auth) : undefined,
-                },
-              } as FlowInvokeEnvelopeMessage,
-            })
-          ).result as FlowState;
-
-          if (!state.operation.done && options.wait) {
-            logger.info('Started flow run, waiting for it to complete...');
-            state = await waitForFlowToComplete(runner, flowName, state.flowId);
-          }
+          let response = await manager.runAction({
+            key: `/flow/${flowName}`,
+            input: data,
+            context: options.auth ? JSON.parse(options.auth) : undefined,
+            telemetryLabels: options.label
+              ? { batchRun: options.label }
+              : undefined,
+          });
           logger.info(
-            'Flow operation:\n' +
-              JSON.stringify(state.operation, undefined, '  ')
+            'Result:\n' + JSON.stringify(response.result, undefined, '  ')
           );
           outputValues.push({
             input: data,
-            output: state.operation,
+            output: response.result,
           });
         }
 

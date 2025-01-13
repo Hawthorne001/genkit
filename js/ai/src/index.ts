@@ -14,37 +14,104 @@
  * limitations under the License.
  */
 
+export { Document, DocumentDataSchema, type DocumentData } from './document.js';
 export {
+  embed,
+  embedderRef,
+  type EmbedderAction,
+  type EmbedderArgument,
+  type EmbedderInfo,
+  type EmbedderParams,
+  type EmbedderReference,
+  type Embedding,
+} from './embedder.js';
+export {
+  BaseDataPointSchema,
   evaluate,
   evaluatorRef,
+  type EvalResponses,
   type EvaluatorAction,
   type EvaluatorInfo,
+  type EvaluatorParams,
   type EvaluatorReference,
 } from './evaluator.js';
 export {
-  Candidate,
   GenerateResponse,
-  Message,
-  NoValidCandidatesError,
+  GenerateResponseChunk,
+  GenerationBlockedError,
+  GenerationResponseError,
   generate,
   generateStream,
+  tagAsPreamble,
   toGenerateRequest,
   type GenerateOptions,
   type GenerateStreamOptions,
   type GenerateStreamResponse,
 } from './generate.js';
-export { definePrompt, renderPrompt, type PromptAction } from './prompt.js';
+export { Message } from './message.js';
+export {
+  GenerationCommonConfigSchema,
+  MessageSchema,
+  ModelRequestSchema,
+  ModelResponseSchema,
+  PartSchema,
+  RoleSchema,
+  type GenerateRequest,
+  type GenerateRequestData,
+  type GenerateResponseData,
+  type GenerationUsage,
+  type MediaPart,
+  type MessageData,
+  type ModelArgument,
+  type ModelReference,
+  type ModelRequest,
+  type ModelResponseData,
+  type Part,
+  type Role,
+  type ToolRequestPart,
+  type ToolResponsePart,
+} from './model.js';
+export {
+  definePrompt,
+  isExecutablePrompt,
+  renderPrompt,
+  type ExecutablePrompt,
+  type PromptAction,
+  type PromptConfig,
+  type PromptFn,
+  type PromptGenerateOptions,
+} from './prompt.js';
+export {
+  rerank,
+  rerankerRef,
+  type RankedDocument,
+  type RerankerAction,
+  type RerankerArgument,
+  type RerankerInfo,
+  type RerankerParams,
+  type RerankerReference,
+} from './reranker.js';
 export {
   index,
   indexerRef,
   retrieve,
   retrieverRef,
   type IndexerAction,
+  type IndexerArgument,
   type IndexerInfo,
+  type IndexerParams,
   type IndexerReference,
   type RetrieverAction,
+  type RetrieverArgument,
   type RetrieverInfo,
+  type RetrieverParams,
   type RetrieverReference,
 } from './retriever.js';
-export { asTool, defineTool, type ToolAction } from './tool.js';
+export {
+  asTool,
+  defineTool,
+  type ToolAction,
+  type ToolArgument,
+  type ToolConfig,
+} from './tool.js';
 export * from './types.js';

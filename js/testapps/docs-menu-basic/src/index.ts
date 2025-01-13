@@ -16,35 +16,33 @@
 
 // This sample is referenced by the genkit docs. Changes should be made to
 // both.
-import { generate } from '@genkit-ai/ai';
-import { configureGenkit } from '@genkit-ai/core';
-import { defineFlow, startFlowsServer } from '@genkit-ai/flow';
-import { geminiPro, googleAI } from '@genkit-ai/googleai';
-import * as z from 'zod';
+import { startFlowServer } from '@genkit-ai/express';
+import { gemini15Flash, googleAI } from '@genkit-ai/googleai';
+import { genkit, z } from 'genkit';
 
-configureGenkit({
+const ai = genkit({
   plugins: [googleAI()],
-  logLevel: 'debug',
-  enableTracingAndMetrics: true,
 });
 
-export const menuSuggestionFlow = defineFlow(
+export const menuSuggestionFlow = ai.defineFlow(
   {
     name: 'menuSuggestionFlow',
     inputSchema: z.string(),
     outputSchema: z.string(),
   },
   async (subject) => {
-    const llmResponse = await generate({
+    const llmResponse = await ai.generate({
       prompt: `Suggest an item for the menu of a ${subject} themed restaurant`,
-      model: geminiPro,
+      model: gemini15Flash,
       config: {
         temperature: 1,
       },
     });
 
-    return llmResponse.text();
+    return llmResponse.text;
   }
 );
 
-startFlowsServer();
+startFlowServer({
+  flows: [menuSuggestionFlow],
+});

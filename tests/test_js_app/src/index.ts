@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { defineModel } from '@genkit-ai/ai/model';
-import { configureGenkit } from '@genkit-ai/core';
-import { defineFlow } from '@genkit-ai/flow';
-import * as z from 'zod';
+import { genkit, z } from 'genkit';
 
-defineModel(
+const ai = genkit({
+  plugins: [],
+});
+
+ai.defineModel(
   {
     name: 'customReflector',
   },
@@ -31,43 +31,52 @@ defineModel(
     const m = input.messages[0];
     input.messages[0] = { content: m.content, role: m.role };
     return {
-      candidates: [
-        {
-          index: 0,
-          finishReason: 'stop',
-          message: {
-            role: 'model',
-            content: [
-              {
-                text: JSON.stringify(input),
-              },
-            ],
+      finishReason: 'stop',
+      message: {
+        role: 'model',
+        content: [
+          {
+            text: JSON.stringify(input),
           },
-        },
-      ],
+        ],
+      },
     };
   }
 );
 
-export default configureGenkit({
-  plugins: [],
-  enableTracingAndMetrics: true,
-  logLevel: 'debug',
-});
-
-export const testFlow = defineFlow(
+export const testFlow = ai.defineFlow(
   { name: 'testFlow', inputSchema: z.string(), outputSchema: z.string() },
   async (subject) => {
-    const response = await generate({
+    const response = await ai.generate({
       model: 'customReflector',
       prompt: subject,
     });
 
     const want = `{"messages":[{"content":[{"text":"${subject}"}],"role":"user"}],"tools":[],"output":{"format":"text"}}`;
-    if (response.text() !== want) {
-      throw new Error(`Expected ${want} but got ${response.text()}`);
+    if (response.text !== want) {
+      throw new Error(`Expected ${want} but got ${response.text}`);
     }
 
     return 'Test flow passed';
+  }
+);
+
+// genkit flow:run streamy 5 -s
+export const streamy = ai.defineStreamingFlow(
+  {
+    name: 'streamy',
+    inputSchema: z.number(),
+    outputSchema: z.string(),
+    streamSchema: z.object({ count: z.number() }),
+  },
+  async (count, streamingCallback) => {
+    let i = 0;
+    if (streamingCallback) {
+      for (; i < count; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        streamingCallback({ count: i });
+      }
+    }
+    return `done: ${count}, streamed: ${i} times`;
   }
 );

@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-import { defineDotprompt, prompt } from '@genkit-ai/dotprompt';
-import { defineFlow } from '@genkit-ai/flow';
 import { gemini15Flash } from '@genkit-ai/googleai';
-import * as z from 'zod';
+import { z } from 'genkit';
 import { HelloFullNameSchema, HelloSchema } from '../common/types.js';
+import { ai } from '../genkit.js';
 
 //
 // Prompt defined in code, subsequently loaded into a flow, plus an additional variant.
@@ -27,7 +26,7 @@ import { HelloFullNameSchema, HelloSchema } from '../common/types.js';
 const promptName = 'codeDefinedPrompt';
 const template = 'Say hello to {{name}} in the voice of a {{persona}}.';
 
-export const codeDefinedPrompt = defineDotprompt(
+export const codeDefinedPrompt = ai.definePrompt(
   {
     name: promptName,
     model: gemini15Flash,
@@ -46,32 +45,30 @@ export const codeDefinedPrompt = defineDotprompt(
       topK: 16,
       topP: 0.95,
       stopSequences: ['STAWP!'],
-      custom: {
-        safetySettings: [
-          {
-            category: 'HARM_CATEGORY_HATE_SPEECH',
-            threshold: 'BLOCK_ONLY_HIGH',
-          },
-          {
-            category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-            threshold: 'BLOCK_ONLY_HIGH',
-          },
-          {
-            category: 'HARM_CATEGORY_HARASSMENT',
-            threshold: 'BLOCK_ONLY_HIGH',
-          },
-          {
-            category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-            threshold: 'BLOCK_ONLY_HIGH',
-          },
-        ],
-      },
+      safetySettings: [
+        {
+          category: 'HARM_CATEGORY_HATE_SPEECH',
+          threshold: 'BLOCK_ONLY_HIGH',
+        },
+        {
+          category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+          threshold: 'BLOCK_ONLY_HIGH',
+        },
+        {
+          category: 'HARM_CATEGORY_HARASSMENT',
+          threshold: 'BLOCK_ONLY_HIGH',
+        },
+        {
+          category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+          threshold: 'BLOCK_ONLY_HIGH',
+        },
+      ],
     },
   },
   template
 );
 
-export const codeDefinedPromptVariant = defineDotprompt(
+export const codeDefinedPromptVariant = ai.definePrompt(
   {
     name: promptName,
     variant: 'jsonOutput',
@@ -92,20 +89,56 @@ export const codeDefinedPromptVariant = defineDotprompt(
   template
 );
 
-defineFlow(
+ai.defineFlow(
   {
     name: 'flowCodeDefinedPrompt',
     inputSchema: HelloSchema,
     outputSchema: z.string(),
-    streamSchema: z.string(),
   },
   async (input) => {
-    const codeDefinedPrompt = await prompt('codeDefinedPrompt');
-    const response = await codeDefinedPrompt.generate({
-      input,
-    });
+    const response = await codeDefinedPrompt(input);
+    return response.text;
+  }
+);
 
-    return response.text();
+//
+// Function(al) prompts
+//
+
+export const promptFn = ai.definePrompt(
+  {
+    name: 'functionalPrompt',
+    input: {
+      schema: HelloSchema,
+      default: {
+        persona: 'Space Pirate',
+      },
+    },
+    model: gemini15Flash,
+  },
+  async (input) => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            text: `say hello to ${input.name} in the voice of ${input.persona}`,
+          },
+        ],
+      },
+    ],
+  })
+);
+
+ai.defineFlow(
+  {
+    name: 'flowFunctionalPrompt',
+    inputSchema: HelloSchema,
+    outputSchema: z.string(),
+  },
+  async (input) => {
+    const hello = ai.prompt('functionalPrompt');
+    return (await hello(input)).text;
   }
 );
 
@@ -113,68 +146,89 @@ defineFlow(
 // Dotprompt file - text output
 //
 
-prompt('hello').then((prompt) => {
-  defineFlow(
-    {
-      name: 'flowDotPrompt',
-      inputSchema: HelloSchema,
-      outputSchema: z.string(),
-    },
-    async (input) => (await prompt.generate({ input })).text()
-  );
-});
+ai.defineFlow(
+  {
+    name: 'flowDotPrompt',
+    inputSchema: HelloSchema,
+    outputSchema: z.string(),
+  },
+  async (input) => {
+    const hello = ai.prompt('hello');
+    return (await hello(input)).text;
+  }
+);
 
 //
 // Dotprompt file - variant, text output
 //
 
-prompt('hello', { variant: 'first-last-name' }).then((prompt) => {
-  defineFlow(
-    {
-      name: 'flowDotPromptVariant',
-      inputSchema: HelloFullNameSchema,
-      outputSchema: z.string(),
-    },
-    async (input) => (await prompt.generate({ input })).text()
-  );
-});
+ai.defineFlow(
+  {
+    name: 'flowDotPromptVariant',
+    inputSchema: HelloFullNameSchema,
+    outputSchema: z.string(),
+  },
+  async (input) => {
+    const hello = ai.prompt('hello', {
+      variant: 'first-last-name',
+    });
+    return (await hello(input)).text;
+  }
+);
 
 //
 // Dotprompt file - json output
 //
 
-prompt('hello', { variant: 'json-output' }).then((prompt) => {
-  defineFlow(
-    {
-      name: 'flowDotPromptJsonOutput',
-      inputSchema: HelloSchema,
-      outputSchema: z.any(),
-    },
-    async (input) => (await prompt.generate({ input })).output()
-  );
-});
+ai.defineFlow(
+  {
+    name: 'flowDotPromptJsonOutput',
+    inputSchema: HelloSchema,
+    outputSchema: z.any(),
+  },
+  async (input) => {
+    const hello = ai.prompt('hello', {
+      variant: 'json-output',
+    });
+    return (await hello(input)).output;
+  }
+);
 
-prompt('hello', { variant: 'system' }).then((prompt) => {
-  defineFlow(
-    {
-      name: 'flowDotPromptSystemMessage',
-      inputSchema: HelloSchema,
-      outputSchema: z.any(),
-    },
-    async (input) => (await prompt.generate({ input })).output()
-  );
-});
+//
+// Dotprompt file - system message
+//
 
-prompt('hello', { variant: 'history' }).then((prompt) => {
-  defineFlow(
-    {
-      name: 'flowDotPromptHistory',
-      inputSchema: HelloSchema,
-      outputSchema: z.any(),
-    },
-    async (input) => (await prompt.generate({ input })).output()
-  );
-});
+ai.defineFlow(
+  {
+    name: 'flowDotPromptSystemMessage',
+    inputSchema: HelloSchema,
+    outputSchema: z.any(),
+  },
+  async (input) => {
+    const hello = ai.prompt('hello', {
+      variant: 'system',
+    });
+    return (await hello(input)).text;
+  }
+);
+
+//
+// Dotprompt file - history
+//
+
+ai.defineFlow(
+  {
+    name: 'flowDotPromptHistory',
+    inputSchema: HelloSchema,
+    outputSchema: z.any(),
+  },
+  async (input) => {
+    const hello = ai.prompt('hello', {
+      variant: 'history',
+    });
+    return (await hello(input)).text;
+  }
+);
 
 // TODO(michaeldoyle): showcase advanced capabilities of dotprompts
 //   chat, multi-modal, tools, history, etc

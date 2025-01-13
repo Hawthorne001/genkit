@@ -26,18 +26,6 @@ import fs from 'fs';
 import { LocalFileEvalStore } from '../../src/eval/localFileEvalStore';
 import { EvalResult, EvalRunSchema, EvalStore } from '../../src/types/eval';
 
-jest.mock('crypto', () => {
-  return {
-    createHash: jest.fn().mockReturnThis(),
-    update: jest.fn().mockReturnThis(),
-    digest: jest.fn(() => 'store-root'),
-  };
-});
-
-jest.mock('os', () => {
-  return { tmpdir: jest.fn(() => '/tmp/') };
-});
-
 const EVAL_RESULTS: EvalResult[] = [
   {
     testCaseId: 'alakjdshfalsdkjh',
@@ -86,7 +74,7 @@ const METRICS_METADATA = {
 
 const EVAL_RUN_WITH_ACTION = EvalRunSchema.parse({
   key: {
-    actionId: 'flow/tellMeAJoke',
+    actionRef: 'flow/tellMeAJoke',
     evalRunId: 'abc1234',
     createdAt: new Date().toISOString(),
   },
@@ -107,6 +95,8 @@ describe('localFileEvalStore', () => {
   let evalStore: EvalStore;
 
   beforeEach(() => {
+    // For storeRoot setup
+    fs.existsSync = jest.fn(() => true);
     LocalFileEvalStore.reset();
     evalStore = LocalFileEvalStore.getEvalStore() as EvalStore;
   });
@@ -125,11 +115,11 @@ describe('localFileEvalStore', () => {
       await evalStore.save(EVAL_RUN_WITH_ACTION);
 
       expect(fs.promises.writeFile).toHaveBeenCalledWith(
-        `/tmp/.genkit/store-root/evals/flow_tellMeAJoke-abc1234.json`,
+        expect.stringContaining(`evals/abc1234.json`),
         JSON.stringify(EVAL_RUN_WITH_ACTION)
       );
       expect(fs.promises.appendFile).toHaveBeenCalledWith(
-        `/tmp/.genkit/store-root/evals/index.txt`,
+        expect.stringContaining(`evals/index.txt`),
         JSON.stringify(EVAL_RUN_WITH_ACTION.key) + '\n'
       );
     });
@@ -138,11 +128,11 @@ describe('localFileEvalStore', () => {
       await evalStore.save(EVAL_RUN_WITHOUT_ACTION);
 
       expect(fs.promises.writeFile).toHaveBeenCalledWith(
-        `/tmp/.genkit/store-root/evals/def456.json`,
+        expect.stringContaining(`evals/def456.json`),
         JSON.stringify(EVAL_RUN_WITHOUT_ACTION)
       );
       expect(fs.promises.appendFile).toHaveBeenCalledWith(
-        `/tmp/.genkit/store-root/evals/index.txt`,
+        expect.stringContaining(`evals/index.txt`),
         JSON.stringify(EVAL_RUN_WITHOUT_ACTION.key) + '\n'
       );
     });
@@ -155,8 +145,7 @@ describe('localFileEvalStore', () => {
         Promise.resolve(JSON.stringify(EVAL_RUN_WITH_ACTION) as any)
       );
       const fetchedEvalRun = await evalStore.load(
-        EVAL_RUN_WITH_ACTION.key.evalRunId,
-        EVAL_RUN_WITH_ACTION.key.actionId
+        EVAL_RUN_WITH_ACTION.key.evalRunId
       );
       expect(fetchedEvalRun).toMatchObject(EVAL_RUN_WITH_ACTION);
     });
@@ -167,8 +156,7 @@ describe('localFileEvalStore', () => {
         Promise.resolve(JSON.stringify(EVAL_RUN_WITHOUT_ACTION) as any)
       );
       const fetchedEvalRun = await evalStore.load(
-        EVAL_RUN_WITHOUT_ACTION.key.evalRunId,
-        EVAL_RUN_WITHOUT_ACTION.key.actionId
+        EVAL_RUN_WITHOUT_ACTION.key.evalRunId
       );
       expect(fetchedEvalRun).toMatchObject(EVAL_RUN_WITHOUT_ACTION);
     });
@@ -177,8 +165,7 @@ describe('localFileEvalStore', () => {
       fs.existsSync = jest.fn(() => false);
 
       const fetchedEvalRun = await evalStore.load(
-        EVAL_RUN_WITH_ACTION.key.evalRunId,
-        EVAL_RUN_WITH_ACTION.key.actionId
+        EVAL_RUN_WITH_ACTION.key.evalRunId
       );
       expect(fetchedEvalRun).toBeUndefined();
     });
@@ -208,7 +195,7 @@ describe('localFileEvalStore', () => {
       );
 
       const fetchedEvalKeys = await evalStore.list({
-        filter: { actionId: EVAL_RUN_WITH_ACTION.key.actionId },
+        filter: { actionRef: EVAL_RUN_WITH_ACTION.key.actionRef },
       });
 
       const expectedKeys = { evalRunKeys: [EVAL_RUN_WITH_ACTION.key] };

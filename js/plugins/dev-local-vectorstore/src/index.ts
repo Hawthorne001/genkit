@@ -14,21 +14,19 @@
  * limitations under the License.
  */
 
-import { embed, EmbedderArgument } from '@genkit-ai/ai/embedder';
+import similarity from 'compute-cosine-similarity';
+import * as fs from 'fs';
+import { Genkit, z } from 'genkit';
+import { EmbedderArgument } from 'genkit/embedder';
+import { GenkitPlugin, genkitPlugin } from 'genkit/plugin';
 import {
   CommonRetrieverOptionsSchema,
-  defineIndexer,
-  defineRetriever,
   Document,
   DocumentData,
   indexerRef,
   retrieverRef,
-} from '@genkit-ai/ai/retriever';
-import { genkitPlugin, PluginProvider } from '@genkit-ai/core';
-import similarity from 'compute-cosine-similarity';
-import * as fs from 'fs';
+} from 'genkit/retriever';
 import { Md5 } from 'ts-md5';
-import * as z from 'zod';
 
 const _LOCAL_FILESTORE = '__db_{INDEX_NAME}.json';
 
@@ -73,15 +71,11 @@ interface Params<EmbedderCustomOptions extends z.ZodTypeAny> {
  */
 export function devLocalVectorstore<EmbedderCustomOptions extends z.ZodTypeAny>(
   params: Params<EmbedderCustomOptions>[]
-): PluginProvider {
-  const plugin = genkitPlugin(
-    'devLocalVectorstore',
-    async (params: Params<EmbedderCustomOptions>[]) => ({
-      retrievers: params.map((p) => configureDevLocalRetriever(p)),
-      indexers: params.map((p) => configureDevLocalIndexer(p)),
-    })
-  );
-  return plugin(params);
+): GenkitPlugin {
+  return genkitPlugin('devLocalVectorstore', async (ai) => {
+    params.map((p) => configureDevLocalRetriever(ai, p));
+    params.map((p) => configureDevLocalIndexer(ai, p));
+  });
 }
 
 export default devLocalVectorstore;
@@ -114,18 +108,21 @@ export function devLocalIndexerRef(indexName: string) {
 
 async function importDocumentsToLocalVectorstore<
   EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  indexName: string;
-  docs: Array<Document>;
-  embedder: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+>(
+  ai: Genkit,
+  params: {
+    indexName: string;
+    docs: Array<Document>;
+    embedder: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   const { docs, embedder, embedderOptions } = { ...params };
   const data = loadFilestore(params.indexName);
 
   await Promise.all(
     docs.map(async (doc) => {
-      const embedding = await embed({
+      const embedding = await ai.embed({
         embedder,
         content: doc,
         options: embedderOptions,
@@ -167,15 +164,16 @@ async function getClosestDocuments<
 /**
  * Configures a local vectorstore retriever
  */
-export function configureDevLocalRetriever<
-  EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  indexName: string;
-  embedder: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+function configureDevLocalRetriever<EmbedderCustomOptions extends z.ZodTypeAny>(
+  ai: Genkit,
+  params: {
+    indexName: string;
+    embedder: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   const { embedder, embedderOptions } = params;
-  const vectorstore = defineRetriever(
+  const vectorstore = ai.defineRetriever(
     {
       name: `devLocalVectorstore/${params.indexName}`,
       configSchema: CommonRetrieverOptionsSchema,
@@ -183,7 +181,7 @@ export function configureDevLocalRetriever<
     async (content, options) => {
       const db = loadFilestore(params.indexName);
 
-      const embedding = await embed({
+      const embedding = await ai.embed({
         embedder,
         content,
         options: embedderOptions,
@@ -203,18 +201,19 @@ export function configureDevLocalRetriever<
 /**
  * Configures a local vectorstore indexer.
  */
-export function configureDevLocalIndexer<
-  EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  indexName: string;
-  embedder: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+function configureDevLocalIndexer<EmbedderCustomOptions extends z.ZodTypeAny>(
+  ai: Genkit,
+  params: {
+    indexName: string;
+    embedder: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   const { embedder, embedderOptions } = params;
-  const vectorstore = defineIndexer(
+  const vectorstore = ai.defineIndexer(
     { name: `devLocalVectorstore/${params.indexName}` },
     async (docs) => {
-      await importDocumentsToLocalVectorstore({
+      await importDocumentsToLocalVectorstore(ai, {
         indexName: params.indexName,
         docs,
         embedder,

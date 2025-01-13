@@ -14,25 +14,47 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { configureGenkit } from '@genkit-ai/core';
 import { firebase } from '@genkit-ai/firebase';
 import { firebaseAuth } from '@genkit-ai/firebase/auth';
 import { noAuth, onFlow } from '@genkit-ai/firebase/functions';
-import { run, runFlow, streamFlow } from '@genkit-ai/flow';
+import {
+  FirebaseUserEngagementSchema,
+  collectUserEngagement,
+} from '@genkit-ai/firebase/user_engagement';
 import { geminiPro, vertexAI } from '@genkit-ai/vertexai';
 import { onRequest } from 'firebase-functions/v2/https';
-import * as z from 'zod';
+import { genkit, run, z } from 'genkit';
 
-configureGenkit({
+const ai = genkit({
   plugins: [firebase(), vertexAI()],
   flowStateStore: 'firebase',
   traceStore: 'firebase',
   enableTracingAndMetrics: true,
   logLevel: 'debug',
+  telemetry: {
+    instrumentation: 'firebase',
+    logger: 'firebase',
+  },
 });
 
+export const simpleFlow = onFlow(
+  ai,
+  {
+    name: 'simpleFlow',
+    inputSchema: z.string(),
+    outputSchema: z.string(),
+    httpsOptions: {
+      cors: '*',
+    },
+    authPolicy: noAuth(),
+  },
+  async (subject) => {
+    return 'hello world!';
+  }
+);
+
 export const jokeFlow = onFlow(
+  ai,
   {
     name: 'jokeFlow',
     inputSchema: z.string(),
@@ -50,17 +72,18 @@ export const jokeFlow = onFlow(
     const prompt = `Tell me a joke about ${subject}`;
 
     return await run('call-llm', async () => {
-      const llmResponse = await generate({
+      const llmResponse = await ai.generate({
         model: geminiPro,
         prompt: prompt,
       });
 
-      return llmResponse.text();
+      return llmResponse.text;
     });
   }
 );
 
 export const authFlow = onFlow(
+  ai,
   {
     name: 'authFlow',
     inputSchema: z.object({ uid: z.string(), input: z.string() }),
@@ -75,6 +98,7 @@ export const authFlow = onFlow(
 );
 
 export const streamer = onFlow(
+  ai,
   {
     name: 'streamer',
     inputSchema: z.number(),
@@ -97,19 +121,20 @@ export const streamer = onFlow(
 );
 
 export const streamConsumer = onFlow(
+  ai,
   {
     name: 'streamConsumer',
     httpsOptions: { invoker: 'private' },
     authPolicy: noAuth(),
   },
   async () => {
-    const response = streamFlow(streamer, 5);
+    const response = streamer(5);
 
-    for await (const chunk of response.stream()) {
+    for await (const chunk of response.stream) {
       console.log('chunk', chunk);
     }
 
-    console.log('streamConsumer done', await response.output());
+    console.log('streamConsumer done', await response.output);
   }
 );
 
@@ -118,10 +143,19 @@ export const triggerJokeFlow = onRequest(
   async (req, res) => {
     const { subject } = req.query;
     console.log('req.query', req.query);
-    const op = await runFlow(jokeFlow, String(subject), {
+    const op = await jokeFlow(String(subject), {
       withLocalAuthContext: { admin: true },
     });
     console.log('operation', op);
     res.send(op);
+  }
+);
+
+/** Example of user engagement collection using Firebase Functions. */
+export const collectEngagement = onRequest(
+  { memory: '512MiB' },
+  async (req, res) => {
+    await collectUserEngagement(FirebaseUserEngagementSchema.parse(req.body));
+    res.send({});
   }
 );

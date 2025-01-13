@@ -14,19 +14,29 @@
  * limitations under the License.
  */
 
-import {
-  genkitPlugin,
-  InitializedPlugin,
-  PluginProvider,
-} from '@genkit-ai/core';
-
+import { Registry } from '@genkit-ai/core/registry';
 import { readFileSync } from 'fs';
 import { basename } from 'path';
-import { defineDotprompt, Dotprompt } from './prompt.js';
+import { toFrontmatter } from './metadata.js';
+import {
+  Dotprompt,
+  DotpromptRef,
+  defineDotprompt,
+  type DotpromptAction,
+  type PromptGenerateOptions,
+} from './prompt.js';
 import { loadPromptFolder, lookupPrompt } from './registry.js';
 
+export { type PromptMetadata } from './metadata.js';
 export { defineHelper, definePartial } from './template.js';
-export { defineDotprompt, Dotprompt };
+export {
+  Dotprompt,
+  defineDotprompt,
+  loadPromptFolder,
+  toFrontmatter,
+  type DotpromptAction,
+  type PromptGenerateOptions,
+};
 
 export interface DotpromptPluginOptions {
   // Directory to look for .prompt files.
@@ -37,39 +47,41 @@ export interface DotpromptPluginOptions {
   dir: string;
 }
 
-export function dotprompt(
-  params: DotpromptPluginOptions = { dir: './prompts' }
-): PluginProvider {
-  const plugin = genkitPlugin(
-    'dotprompt',
-    async (options: DotpromptPluginOptions): Promise<InitializedPlugin> => {
-      await loadPromptFolder(options.dir);
-      return {};
-    }
-  );
-  return plugin(params);
-}
-
 export async function prompt<Variables = unknown>(
+  registry: Registry,
   name: string,
-  options?: { variant?: string }
+  options?: { variant?: string; dir?: string }
 ): Promise<Dotprompt<Variables>> {
-  return (await lookupPrompt(name, options?.variant)) as Dotprompt<Variables>;
+  return (await lookupPrompt(
+    registry,
+    name,
+    options?.variant,
+    options?.dir ?? './prompts'
+  )) as Dotprompt<Variables>;
 }
 
-export function loadPromptFile(path: string): Dotprompt {
+export function promptRef<Variables = unknown>(
+  name: string,
+  options?: { variant?: string; dir?: string }
+): DotpromptRef<Variables> {
+  return new DotpromptRef(name, options);
+}
+
+export function loadPromptFile(registry: Registry, path: string): Dotprompt {
   return Dotprompt.parse(
+    registry,
     basename(path).split('.')[0],
     readFileSync(path, 'utf-8')
   );
 }
 
 export async function loadPromptUrl(
+  registry: Registry,
   name: string,
   url: string
 ): Promise<Dotprompt> {
   const fetch = (await import('node-fetch')).default;
   const response = await fetch(url);
   const text = await response.text();
-  return Dotprompt.parse(name, text);
+  return Dotprompt.parse(registry, name, text);
 }

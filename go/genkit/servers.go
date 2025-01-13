@@ -27,34 +27,133 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
+	"github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/core/logger"
 	"github.com/firebase/genkit/go/core/tracing"
+	"github.com/firebase/genkit/go/internal"
 	"github.com/firebase/genkit/go/internal/action"
 	"github.com/firebase/genkit/go/internal/base"
 	"github.com/firebase/genkit/go/internal/registry"
 	"go.opentelemetry.io/otel/trace"
 )
 
+type runtimeFileData struct {
+	ID                       string `json:"id"`
+	PID                      int    `json:"pid"`
+	ReflectionServerURL      string `json:"reflectionServerUrl"`
+	Timestamp                string `json:"timestamp"`
+	GenkitVersion            string `json:"genkitVersion"`
+	ReflectionApiSpecVersion int    `json:"reflectionApiSpecVersion"`
+}
+
+type devServer struct {
+	reg             *registry.Registry
+	runtimeFilePath string
+}
+
 // startReflectionServer starts the Reflection API server listening at the
 // value of the environment variable GENKIT_REFLECTION_PORT for the port,
 // or ":3100" if it is empty.
-func startReflectionServer(errCh chan<- error) *http.Server {
-	slog.Info("starting reflection server")
+func startReflectionServer(ctx context.Context, r *registry.Registry, errCh chan<- error) *http.Server {
+	slog.Debug("starting reflection server")
 	addr := serverAddress("", "GENKIT_REFLECTION_PORT", "127.0.0.1:3100")
-	mux := newDevServeMux(registry.Global)
-	return startServer(addr, mux, errCh)
+	s := &devServer{reg: r}
+	if err := s.writeRuntimeFile(addr); err != nil {
+		slog.Error("failed to write runtime file", "error", err)
+	}
+	mux := newDevServeMux(s)
+	server := startServer(addr, mux, errCh)
+	go func() {
+		<-ctx.Done()
+		if err := s.cleanupRuntimeFile(); err != nil {
+			slog.Error("failed to cleanup runtime file", "error", err)
+		}
+	}()
+	return server
+}
+
+// writeRuntimeFile writes a file describing the runtime to the project root.
+func (s *devServer) writeRuntimeFile(url string) error {
+	projectRoot, err := findProjectRoot()
+	if err != nil {
+		return fmt.Errorf("failed to find project root: %w", err)
+	}
+	runtimesDir := filepath.Join(projectRoot, ".genkit", "runtimes")
+	if err := os.MkdirAll(runtimesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create runtimes directory: %w", err)
+	}
+	runtimeID := os.Getenv("GENKIT_RUNTIME_ID")
+	if runtimeID == "" {
+		runtimeID = strconv.Itoa(os.Getpid())
+	}
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	s.runtimeFilePath = filepath.Join(runtimesDir, fmt.Sprintf("%d-%s.json", os.Getpid(), timestamp))
+	data := runtimeFileData{
+		ID:                       runtimeID,
+		PID:                      os.Getpid(),
+		ReflectionServerURL:      fmt.Sprintf("http://%s", url),
+		Timestamp:                timestamp,
+		GenkitVersion:            "go/" + internal.Version,
+		ReflectionApiSpecVersion: internal.GENKIT_REFLECTION_API_SPEC_VERSION,
+	}
+	fileContent, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal runtime data: %w", err)
+	}
+	if err := os.WriteFile(s.runtimeFilePath, fileContent, 0644); err != nil {
+		return fmt.Errorf("failed to write runtime file: %w", err)
+	}
+	slog.Debug("runtime file written", "path", s.runtimeFilePath)
+	return nil
+}
+
+// cleanupRuntimeFile removes the runtime file associated with the dev server.
+func (s *devServer) cleanupRuntimeFile() error {
+	if s.runtimeFilePath == "" {
+		return nil
+	}
+	content, err := os.ReadFile(s.runtimeFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to read runtime file: %w", err)
+	}
+	var data runtimeFileData
+	if err := json.Unmarshal(content, &data); err != nil {
+		return fmt.Errorf("failed to unmarshal runtime data: %w", err)
+	}
+	if data.PID == os.Getpid() {
+		if err := os.Remove(s.runtimeFilePath); err != nil {
+			return fmt.Errorf("failed to remove runtime file: %w", err)
+		}
+		slog.Debug("runtime file cleaned up", "path", s.runtimeFilePath)
+	}
+	return nil
+}
+
+// findProjectRoot finds the project root by looking for a go.mod file.
+func findProjectRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not find project root (go.mod not found)")
+		}
+		dir = parent
+	}
 }
 
 // startFlowServer starts a production server listening at the given address.
@@ -63,10 +162,10 @@ func startReflectionServer(errCh chan<- error) *http.Server {
 // for the port, and if that is empty it uses ":3400".
 //
 // To construct a server with additional routes, use [NewFlowServeMux].
-func startFlowServer(addr string, flows []string, errCh chan<- error) *http.Server {
-	slog.Info("starting flow server")
+func startFlowServer(g *Genkit, addr string, flows []string, errCh chan<- error) *http.Server {
+	slog.Debug("starting flow server")
 	addr = serverAddress(addr, "PORT", "127.0.0.1:3400")
-	mux := NewFlowServeMux(flows)
+	mux := NewFlowServeMux(g, flows)
 	return startServer(addr, mux, errCh)
 }
 
@@ -76,7 +175,7 @@ type flow interface {
 
 	// runJSON uses encoding/json to unmarshal the input,
 	// calls Flow.start, then returns the marshaled result.
-	runJSON(ctx context.Context, input json.RawMessage, cb streamingCallback[json.RawMessage]) (json.RawMessage, error)
+	runJSON(ctx context.Context, authHeader string, input json.RawMessage, cb streamingCallback[json.RawMessage]) (json.RawMessage, error)
 }
 
 // startServer starts an HTTP server listening on the address.
@@ -88,7 +187,7 @@ func startServer(addr string, handler http.Handler, errCh chan<- error) *http.Se
 	}
 
 	go func() {
-		slog.Info("server listening", "addr", addr)
+		slog.Debug("server listening", "addr", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("server error on %s: %w", addr, err)
 		}
@@ -111,7 +210,7 @@ func shutdownServers(servers []*http.Server) error {
 			if err := srv.Shutdown(ctx); err != nil {
 				slog.Error("server shutdown failed", "addr", srv.Addr, "err", err)
 			} else {
-				slog.Info("server shutdown successfully", "addr", srv.Addr)
+				slog.Debug("server shutdown successfully", "addr", srv.Addr)
 			}
 		}(server)
 	}
@@ -132,22 +231,14 @@ func shutdownServers(servers []*http.Server) error {
 	return nil
 }
 
-type devServer struct {
-	reg *registry.Registry
-}
-
-func newDevServeMux(r *registry.Registry) *http.ServeMux {
+func newDevServeMux(s *devServer) *http.ServeMux {
 	mux := http.NewServeMux()
-	s := &devServer{r}
 	handle(mux, "GET /api/__health", func(w http.ResponseWriter, _ *http.Request) error {
 		return nil
 	})
 	handle(mux, "POST /api/runAction", s.handleRunAction)
 	handle(mux, "GET /api/actions", s.handleListActions)
-	handle(mux, "GET /api/envs/{env}/traces/{traceID}", s.handleGetTrace)
-	handle(mux, "GET /api/envs/{env}/traces", s.handleListTraces)
-	handle(mux, "GET /api/envs/{env}/flowStates", s.handleListFlowStates)
-
+	handle(mux, "POST /api/notify", s.handleNotify)
 	return mux
 }
 
@@ -156,26 +247,25 @@ func newDevServeMux(r *registry.Registry) *http.ServeMux {
 func (s *devServer) handleRunAction(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	var body struct {
-		Key   string          `json:"key"`
-		Input json.RawMessage `json:"input"`
+		Key     string          `json:"key"`
+		Input   json.RawMessage `json:"input"`
+		Context json.RawMessage `json:"context"`
 	}
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return &base.HTTPError{Code: http.StatusBadRequest, Err: err}
 	}
-	stream := false
-	if s := r.FormValue("stream"); s != "" {
-		var err error
-		stream, err = strconv.ParseBool(s)
-		if err != nil {
-			return err
-		}
+	stream, err := parseBoolQueryParam(r, "stream")
+	if err != nil {
+		return err
 	}
 	logger.FromContext(ctx).Debug("running action",
 		"key", body.Key,
 		"stream", stream)
 	var callback streamingCallback[json.RawMessage]
 	if stream {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Transfer-Encoding", "chunked")
 		// Stream results are newline-separated JSON.
 		callback = func(ctx context.Context, msg json.RawMessage) error {
 			_, err := fmt.Fprintf(w, "%s\n", msg)
@@ -188,11 +278,37 @@ func (s *devServer) handleRunAction(w http.ResponseWriter, r *http.Request) erro
 			return nil
 		}
 	}
-	resp, err := runAction(ctx, s.reg, body.Key, body.Input, callback)
+	var contextMap map[string]any = nil
+	if body.Context != nil {
+		json.Unmarshal(body.Context, &contextMap)
+	}
+	resp, err := runAction(ctx, s.reg, body.Key, body.Input, callback, contextMap)
 	if err != nil {
 		return err
 	}
 	return writeJSON(ctx, w, resp)
+}
+
+// handleNotify configures the telemetry server URL from the request.
+func (s *devServer) handleNotify(w http.ResponseWriter, r *http.Request) error {
+	var body struct {
+		TelemetryServerURL       string `json:"telemetryServerUrl"`
+		ReflectionApiSpecVersion int    `json:"reflectionApiSpecVersion"`
+	}
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return &base.HTTPError{Code: http.StatusBadRequest, Err: err}
+	}
+	if body.TelemetryServerURL != "" {
+		s.reg.TracingState().WriteTelemetryImmediate(tracing.NewHTTPTelemetryClient(body.TelemetryServerURL))
+		slog.Debug("connected to telemetry server", "url", body.TelemetryServerURL)
+	}
+	if body.ReflectionApiSpecVersion != internal.GENKIT_REFLECTION_API_SPEC_VERSION {
+		slog.Error("Genkit CLI version is not compatible with runtime library. Please use `genkit-cli` version compatible with runtime library version.")
+	}
+	w.WriteHeader(http.StatusOK)
+	_, err := w.Write([]byte("OK"))
+	return err
 }
 
 type runActionResponse struct {
@@ -204,11 +320,15 @@ type telemetry struct {
 	TraceID string `json:"traceId"`
 }
 
-func runAction(ctx context.Context, reg *registry.Registry, key string, input json.RawMessage, cb streamingCallback[json.RawMessage]) (*runActionResponse, error) {
+func runAction(ctx context.Context, reg *registry.Registry, key string, input json.RawMessage, cb streamingCallback[json.RawMessage], runtimeContext map[string]any) (*runActionResponse, error) {
 	action := reg.LookupAction(key)
 	if action == nil {
 		return nil, &base.HTTPError{Code: http.StatusNotFound, Err: fmt.Errorf("no action with key %q", key)}
 	}
+	if runtimeContext != nil {
+		ctx = core.WithActionContext(ctx, runtimeContext)
+	}
+
 	var traceID string
 	output, err := tracing.RunInNewSpan(ctx, reg.TracingState(), "dev-run-action-wrapper", "", true, input, func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
 		tracing.SetCustomMetadataAttr(ctx, "genkit-dev-internal", "true")
@@ -234,67 +354,6 @@ func (s *devServer) handleListActions(w http.ResponseWriter, r *http.Request) er
 	return writeJSON(r.Context(), w, descMap)
 }
 
-// handleGetTrace returns a single trace from a TraceStore.
-func (s *devServer) handleGetTrace(w http.ResponseWriter, r *http.Request) error {
-	env := r.PathValue("env")
-	ts := s.reg.LookupTraceStore(registry.Environment(env))
-	if ts == nil {
-		return &base.HTTPError{Code: http.StatusNotFound, Err: fmt.Errorf("no TraceStore for environment %q", env)}
-	}
-	tid := r.PathValue("traceID")
-	td, err := ts.Load(r.Context(), tid)
-	if errors.Is(err, fs.ErrNotExist) {
-		return &base.HTTPError{Code: http.StatusNotFound, Err: fmt.Errorf("no %s trace with ID %q", env, tid)}
-	}
-	if err != nil {
-		return err
-	}
-	return writeJSON(r.Context(), w, td)
-}
-
-// handleListTraces returns a list of traces from a TraceStore.
-func (s *devServer) handleListTraces(w http.ResponseWriter, r *http.Request) error {
-	env := r.PathValue("env")
-	ts := s.reg.LookupTraceStore(registry.Environment(env))
-	if ts == nil {
-		return &base.HTTPError{Code: http.StatusNotFound, Err: fmt.Errorf("no TraceStore for environment %q", env)}
-	}
-	limit := 0
-	if lim := r.FormValue("limit"); lim != "" {
-		var err error
-		limit, err = strconv.Atoi(lim)
-		if err != nil {
-			return &base.HTTPError{Code: http.StatusBadRequest, Err: err}
-		}
-	}
-	ctoken := r.FormValue("continuationToken")
-	tds, ctoken, err := ts.List(r.Context(), &tracing.Query{Limit: limit, ContinuationToken: ctoken})
-	if errors.Is(err, tracing.ErrBadQuery) {
-		return &base.HTTPError{Code: http.StatusBadRequest, Err: err}
-	}
-	if err != nil {
-		return err
-	}
-	if tds == nil {
-		tds = []*tracing.Data{}
-	}
-	return writeJSON(r.Context(), w, listTracesResult{tds, ctoken})
-}
-
-type listTracesResult struct {
-	Traces            []*tracing.Data `json:"traces"`
-	ContinuationToken string          `json:"continuationToken"`
-}
-
-func (s *devServer) handleListFlowStates(w http.ResponseWriter, r *http.Request) error {
-	return writeJSON(r.Context(), w, listFlowStatesResult{[]base.FlowStater{}, ""})
-}
-
-type listFlowStatesResult struct {
-	FlowStates        []base.FlowStater `json:"flowStates"`
-	ContinuationToken string            `json:"continuationToken"`
-}
-
 // NewFlowServeMux constructs a [net/http.ServeMux].
 // If flows is non-empty, the each of the named flows is registered as a route.
 // Otherwise, all defined flows are registered.
@@ -307,8 +366,8 @@ type listFlowStatesResult struct {
 //
 //	mainMux := http.NewServeMux()
 //	mainMux.Handle("POST /flow/", http.StripPrefix("/flow/", NewFlowServeMux()))
-func NewFlowServeMux(flows []string) *http.ServeMux {
-	return newFlowServeMux(registry.Global, flows)
+func NewFlowServeMux(g *Genkit, flows []string) *http.ServeMux {
+	return newFlowServeMux(g.reg, flows)
 }
 
 func newFlowServeMux(r *registry.Registry, flows []string) *http.ServeMux {
@@ -328,29 +387,54 @@ func newFlowServeMux(r *registry.Registry, flows []string) *http.ServeMux {
 
 func nonDurableFlowHandler(f flow) func(http.ResponseWriter, *http.Request) error {
 	return func(w http.ResponseWriter, r *http.Request) error {
+		var body struct {
+			Data json.RawMessage `json:"data"`
+		}
 		defer r.Body.Close()
-		input, err := io.ReadAll(r.Body)
-		if err != nil {
-			return err
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return &base.HTTPError{Code: http.StatusBadRequest, Err: err}
 		}
 		stream, err := parseBoolQueryParam(r, "stream")
 		if err != nil {
 			return err
 		}
-		if stream {
-			// TODO: implement streaming.
-			return &base.HTTPError{Code: http.StatusNotImplemented, Err: errors.New("streaming")}
-		} else {
-			// TODO: telemetry
-			out, err := f.runJSON(r.Context(), json.RawMessage(input), nil)
-			if err != nil {
+		var callback streamingCallback[json.RawMessage]
+		if r.Header.Get("Accept") == "text/event-stream" || stream {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Transfer-Encoding", "chunked")
+			// Event Stream results are in JSON format separated by two newline escape sequences
+			// including the `data` and `message` labels
+			callback = func(ctx context.Context, msg json.RawMessage) error {
+				_, err := fmt.Fprintf(w, "data: {\"message\": %s}\n\n", msg)
+				if err != nil {
+					return err
+				}
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				return nil
+			}
+		}
+		// TODO: telemetry
+		out, err := f.runJSON(r.Context(), r.Header.Get("Authorization"), body.Data, callback)
+		if err != nil {
+			if r.Header.Get("Accept") == "text/event-stream" || stream {
+				_, err = fmt.Fprintf(w, "data: {\"error\": {\"status\": \"INTERNAL\", \"message\": \"stream flow error\", \"details\": \"%v\"}}\n\n", err)
 				return err
 			}
-			// Responses for non-streaming, non-durable flows are passed back
-			// with the flow result stored in a field called "result."
-			_, err = fmt.Fprintf(w, `{"result": %s}\n`, out)
 			return err
 		}
+		// Responses for streaming, non-durable flows should be prefixed
+		// with "data"
+		if r.Header.Get("Accept") == "text/event-stream" || stream {
+			_, err = fmt.Fprintf(w, "data: {\"result\": %s}\n\n", out)
+			return err
+		}
+
+		// Responses for non-streaming, non-durable flows are passed back
+		// with the flow result stored in a field called "result."
+		_, err = fmt.Fprintf(w, `{"result": %s}\n`, out)
+		return err
 	}
 }
 
@@ -363,28 +447,6 @@ func serverAddress(arg, envVar, defaultValue string) string {
 		return "127.0.0.1:" + port
 	}
 	return defaultValue
-}
-
-func listenAndServe(addr string, mux *http.ServeMux) error {
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		slog.Info("received SIGTERM, shutting down server")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
-			slog.Error("server shutdown failed", "err", err)
-		} else {
-			slog.Info("server shutdown successfully")
-		}
-	}()
-	slog.Info("listening", "addr", addr)
-	return server.ListenAndServe()
 }
 
 // requestID is a unique ID for each request.

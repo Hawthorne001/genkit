@@ -14,16 +14,11 @@
  * limitations under the License.
  */
 
-import { configureGenkit, defineSchema } from '@genkit-ai/core';
-import { defineHelper, dotprompt, prompt } from '@genkit-ai/dotprompt';
-import { defineFlow } from '@genkit-ai/flow';
 import { googleAI } from '@genkit-ai/googleai';
-import * as z from 'zod';
+import { genkit, z } from 'genkit';
 
-configureGenkit({
-  plugins: [googleAI(), dotprompt()],
-  enableTracingAndMetrics: true,
-  logLevel: 'debug',
+const ai = genkit({
+  plugins: [googleAI()],
 });
 
 /*
@@ -33,7 +28,7 @@ title: string, recipe title
       quantity: string
     steps(array, the steps required to complete the recipe): string
     */
-const RecipeSchema = defineSchema(
+const RecipeSchema = ai.defineSchema(
   'Recipe',
   z.object({
     title: z.string().describe('recipe title'),
@@ -49,68 +44,63 @@ const RecipeSchema = defineSchema(
 // If it fails, due to the prompt file being invalid, the process will crash,
 // instead of us getting a more mysterious failure later when the flow runs.
 
-defineHelper('list', (data: any) => {
+ai.defineHelper('list', (data: any) => {
   if (!Array.isArray(data)) {
     return '';
   }
   return data.map((item) => `- ${item}`).join('\n');
 });
 
-prompt('recipe').then((recipePrompt) => {
-  defineFlow(
-    {
-      name: 'chefFlow',
-      inputSchema: z.object({
-        food: z.string(),
-      }),
-      outputSchema: RecipeSchema,
-    },
-    async (input) =>
-      (
-        await recipePrompt.generate<typeof RecipeSchema>({ input: input })
-      ).output()!
-  );
-});
+ai.defineFlow(
+  {
+    name: 'chefFlow',
+    inputSchema: z.object({
+      food: z.string(),
+    }),
+    outputSchema: RecipeSchema,
+  },
+  async (input) =>
+    (await ai.prompt<any, typeof RecipeSchema>('recipe')(input)).output!
+);
 
-prompt('recipe', { variant: 'robot' }).then((recipePrompt) => {
-  defineFlow(
-    {
-      name: 'robotChefFlow',
-      inputSchema: z.object({
-        food: z.string(),
-      }),
-      outputSchema: z.any(),
-    },
-    async (input) => (await recipePrompt.generate({ input: input })).output()
-  );
-});
+ai.defineFlow(
+  {
+    name: 'robotChefFlow',
+    inputSchema: z.object({
+      food: z.string(),
+    }),
+    outputSchema: z.any(),
+  },
+  async (input) =>
+    (await ai.prompt('recipe', { variant: 'robot' })(input)).output
+);
 
 // A variation that supports streaming, optionally
 
-prompt('story').then((storyPrompt) => {
-  defineFlow(
-    {
-      name: 'tellStory',
-      inputSchema: z.object({
-        subject: z.string(),
-        personality: z.string().optional(),
-      }),
-      outputSchema: z.string(),
-      streamSchema: z.string(),
-    },
-    async ({ subject, personality }, streamingCallback) => {
-      if (streamingCallback) {
-        const { response, stream } = await storyPrompt.generateStream({
-          input: { subject, personality },
-        });
-        for await (const chunk of stream()) {
-          streamingCallback(chunk.content[0]?.text!);
-        }
-        return (await response()).text();
-      } else {
-        const response = await storyPrompt.generate({ input: { subject } });
-        return response.text();
+ai.defineFlow(
+  {
+    name: 'tellStory',
+    inputSchema: z.object({
+      subject: z.string(),
+      personality: z.string().optional(),
+    }),
+    outputSchema: z.string(),
+    streamSchema: z.string(),
+  },
+  async ({ subject, personality }, streamingCallback) => {
+    const storyPrompt = ai.prompt('story');
+    if (streamingCallback) {
+      const { response, stream } = await storyPrompt.stream({
+        subject,
+        personality,
+      });
+      for await (const chunk of stream) {
+        streamingCallback(chunk.content[0]?.text!);
       }
+      return (await response).text;
+    } else {
+      const response = await storyPrompt({ subject });
+      return response.text;
     }
-  );
-});
+  }
+);

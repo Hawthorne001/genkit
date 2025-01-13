@@ -14,18 +14,22 @@
  * limitations under the License.
  */
 
-import { defineDotprompt } from '@genkit-ai/dotprompt';
-import * as z from 'zod';
+import { gemini15Flash } from '@genkit-ai/googleai';
+import { z } from 'genkit';
+import { ai } from './genkit.js';
 
 // Define a prompt that includes the retrieved context documents
 
-export const augmentedPrompt = defineDotprompt(
+export const augmentedPrompt = ai.definePrompt(
   {
+    model: gemini15Flash,
     name: 'augmentedPrompt',
-    input: z.object({
-      context: z.array(z.string()),
-      question: z.string(),
-    }),
+    input: {
+      schema: z.object({
+        context: z.array(z.string()),
+        question: z.string(),
+      }),
+    },
     output: {
       format: 'text',
     },

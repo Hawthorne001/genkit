@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
-import { Action, GenkitError, defineAction } from '@genkit-ai/core';
-import { lookupAction } from '@genkit-ai/core/registry';
-import * as z from 'zod';
+import { Action, GenkitError, defineAction, z } from '@genkit-ai/core';
+import { Registry } from '@genkit-ai/core/registry';
 import { Document, DocumentData, DocumentDataSchema } from './document.js';
 import { EmbedderInfo } from './embedder.js';
 
@@ -29,12 +28,18 @@ export {
   type TextPart,
 } from './document.js';
 
-type RetrieverFn<RetrieverOptions extends z.ZodTypeAny> = (
+/**
+ * Retriever implementation function signature.
+ */
+export type RetrieverFn<RetrieverOptions extends z.ZodTypeAny> = (
   query: Document,
   queryOpts: z.infer<RetrieverOptions>
 ) => Promise<RetrieverResponse>;
 
-type IndexerFn<IndexerOptions extends z.ZodTypeAny> = (
+/**
+ * Indexer implementation function signature.
+ */
+export type IndexerFn<IndexerOptions extends z.ZodTypeAny> = (
   docs: Array<Document>,
   indexerOpts: z.infer<IndexerOptions>
 ) => Promise<void>;
@@ -55,6 +60,9 @@ const IndexerRequestSchema = z.object({
   options: z.any().optional(),
 });
 
+/**
+ * Zod schema of retriever info metadata.
+ */
 export const RetrieverInfoSchema = z.object({
   label: z.string().optional(),
   /** Supported model capabilities. */
@@ -67,15 +75,17 @@ export const RetrieverInfoSchema = z.object({
 });
 export type RetrieverInfo = z.infer<typeof RetrieverInfoSchema>;
 
+/**
+ * A retriever action type.
+ */
 export type RetrieverAction<CustomOptions extends z.ZodTypeAny = z.ZodTypeAny> =
-  Action<
-    typeof RetrieverRequestSchema,
-    typeof RetrieverResponseSchema,
-    { model: RetrieverInfo }
-  > & {
+  Action<typeof RetrieverRequestSchema, typeof RetrieverResponseSchema> & {
     __configSchema?: CustomOptions;
   };
 
+/**
+ * An indexer action type.
+ */
 export type IndexerAction<IndexerOptions extends z.ZodTypeAny = z.ZodTypeAny> =
   Action<typeof IndexerRequestSchema, z.ZodVoid> & {
     __configSchema?: IndexerOptions;
@@ -112,6 +122,7 @@ function indexerWithMetadata<
 export function defineRetriever<
   OptionsType extends z.ZodTypeAny = z.ZodTypeAny,
 >(
+  registry: Registry,
   options: {
     name: string;
     configSchema?: OptionsType;
@@ -120,6 +131,7 @@ export function defineRetriever<
   runner: RetrieverFn<OptionsType>
 ) {
   const retriever = defineAction(
+    registry,
     {
       actionType: 'retriever',
       name: options.name,
@@ -150,6 +162,7 @@ export function defineRetriever<
  *  Creates an indexer action for the provided {@link IndexerFn} implementation.
  */
 export function defineIndexer<IndexerOptions extends z.ZodTypeAny>(
+  registry: Registry,
   options: {
     name: string;
     embedderInfo?: EmbedderInfo;
@@ -158,6 +171,7 @@ export function defineIndexer<IndexerOptions extends z.ZodTypeAny>(
   runner: IndexerFn<IndexerOptions>
 ) {
   const indexer = defineAction(
+    registry,
     {
       actionType: 'indexer',
       name: options.name,
@@ -193,6 +207,9 @@ export interface RetrieverParams<
   options?: z.infer<CustomOptions>;
 }
 
+/**
+ * A type that can be used to pass a retriever as an argument, either using a reference or an action.
+ */
 export type RetrieverArgument<
   CustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
 > = RetrieverAction<CustomOptions> | RetrieverReference<CustomOptions> | string;
@@ -201,13 +218,16 @@ export type RetrieverArgument<
  * Retrieves documents from a {@link RetrieverArgument} based on the provided query.
  */
 export async function retrieve<CustomOptions extends z.ZodTypeAny>(
+  registry: Registry,
   params: RetrieverParams<CustomOptions>
 ): Promise<Array<Document>> {
   let retriever: RetrieverAction<CustomOptions>;
   if (typeof params.retriever === 'string') {
-    retriever = await lookupAction(`/retriever/${params.retriever}`);
+    retriever = await registry.lookupAction(`/retriever/${params.retriever}`);
   } else if (Object.hasOwnProperty.call(params.retriever, 'info')) {
-    retriever = await lookupAction(`/retriever/${params.retriever.name}`);
+    retriever = await registry.lookupAction(
+      `/retriever/${params.retriever.name}`
+    );
   } else {
     retriever = params.retriever as RetrieverAction<CustomOptions>;
   }
@@ -225,24 +245,37 @@ export async function retrieve<CustomOptions extends z.ZodTypeAny>(
   return response.documents.map((d) => new Document(d));
 }
 
+/**
+ * A type that can be used to pass an indexer as an argument, either using a reference or an action.
+ */
 export type IndexerArgument<CustomOptions extends z.ZodTypeAny = z.ZodTypeAny> =
   IndexerReference<CustomOptions> | IndexerAction<CustomOptions> | string;
 
 /**
+ * Options passed to the index function.
+ */
+export interface IndexerParams<
+  CustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
+> {
+  indexer: IndexerArgument<CustomOptions>;
+  documents: Array<DocumentData>;
+  options?: z.infer<CustomOptions>;
+}
+
+/**
  * Indexes documents using a {@link IndexerArgument}.
  */
-export async function index<IndexerOptions extends z.ZodTypeAny>(params: {
-  indexer: IndexerArgument<IndexerOptions>;
-  documents: Array<DocumentData>;
-  options?: z.infer<IndexerOptions>;
-}): Promise<void> {
-  let indexer: IndexerAction<IndexerOptions>;
+export async function index<CustomOptions extends z.ZodTypeAny>(
+  registry: Registry,
+  params: IndexerParams<CustomOptions>
+): Promise<void> {
+  let indexer: IndexerAction<CustomOptions>;
   if (typeof params.indexer === 'string') {
-    indexer = await lookupAction(`/indexer/${params.indexer}`);
+    indexer = await registry.lookupAction(`/indexer/${params.indexer}`);
   } else if (Object.hasOwnProperty.call(params.indexer, 'info')) {
-    indexer = await lookupAction(`/indexer/${params.indexer.name}`);
+    indexer = await registry.lookupAction(`/indexer/${params.indexer.name}`);
   } else {
-    indexer = params.indexer as IndexerAction<IndexerOptions>;
+    indexer = params.indexer as IndexerAction<CustomOptions>;
   }
   if (!indexer) {
     throw new Error('Unable to utilize the provided indexer');
@@ -253,10 +286,16 @@ export async function index<IndexerOptions extends z.ZodTypeAny>(params: {
   });
 }
 
+/**
+ * Zod schema of common retriever options.
+ */
 export const CommonRetrieverOptionsSchema = z.object({
   k: z.number().describe('Number of documents to retrieve').optional(),
 });
 
+/**
+ * A retriver reference object.
+ */
 export interface RetrieverReference<CustomOptions extends z.ZodTypeAny> {
   name: string;
   configSchema?: CustomOptions;
@@ -276,6 +315,10 @@ export function retrieverRef<
 
 // Reuse the same schema for both indexers and retrievers -- for now.
 export const IndexerInfoSchema = RetrieverInfoSchema;
+
+/**
+ * Indexer metadata.
+ */
 export type IndexerInfo = z.infer<typeof IndexerInfoSchema>;
 
 export interface IndexerReference<CustomOptions extends z.ZodTypeAny> {
@@ -327,6 +370,7 @@ function itemToMetadata(
   if (Array.isArray(options.metadata) && typeof item === 'object') {
     const out: Record<string, any> = {};
     options.metadata.forEach((key) => (out[key] = item[key]));
+    return out;
   }
   if (typeof options.metadata === 'function') return options.metadata(item);
   if (!options.metadata && typeof item === 'object') {
@@ -340,6 +384,9 @@ function itemToMetadata(
   });
 }
 
+/**
+ * Simple retriever options.
+ */
 export interface SimpleRetrieverOptions<
   C extends z.ZodTypeAny = z.ZodTypeAny,
   R = any,
@@ -376,10 +423,12 @@ export function defineSimpleRetriever<
   C extends z.ZodTypeAny = z.ZodTypeAny,
   R = any,
 >(
+  registry: Registry,
   options: SimpleRetrieverOptions<C, R>,
   handler: (query: Document, config: z.infer<C>) => Promise<R[]>
 ) {
   return defineRetriever(
+    registry,
     {
       name: options.name,
       configSchema: options.configSchema,

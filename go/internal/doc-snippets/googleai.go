@@ -16,51 +16,53 @@ package snippets
 
 import (
 	"context"
+	"log"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/googleai"
 )
 
 func googleaiEx(ctx context.Context) error {
-	var err error
+	g, err := genkit.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// [START init]
-	if err := googleai.Init(ctx, nil); err != nil {
+	if err := googleai.Init(ctx, g, nil); err != nil {
 		return err
 	}
 	// [END init]
 
 	yourKey := ""
 	// [START initkey]
-	if err := googleai.Init(ctx, &googleai.Config{APIKey: yourKey}); err != nil {
+	if err := googleai.Init(ctx, g, &googleai.Config{APIKey: yourKey}); err != nil {
 		return err
 	}
 	// [END initkey]
 
 	// [START model]
-	langModel := googleai.Model("gemini-1.5-flash")
+	model := googleai.Model(g, "gemini-1.5-flash")
 	// [END model]
 
 	// [START gen]
-	genRes, err := langModel.Generate(ctx, ai.NewGenerateRequest(
-		nil, ai.NewUserTextMessage("Tell me a joke.")), nil)
+	text, err := genkit.GenerateText(ctx, g, ai.WithModel(model), ai.WithTextPrompt("Tell me a joke."))
 	if err != nil {
 		return err
 	}
 	// [END gen]
 
-	_ = genRes
+	_ = text
 
 	var userInput string
 
 	// [START embedder]
-	embeddingModel := googleai.Embedder("text-embedding-004")
+	embeddingModel := googleai.Embedder(g, "text-embedding-004")
 	// [END embedder]
 
 	// [START embed]
-	embedRes, err := embeddingModel.Embed(ctx, &ai.EmbedRequest{
-		Documents: []*ai.Document{ai.DocumentFromText(userInput, nil)},
-	})
+	embedRes, err := ai.Embed(ctx, embeddingModel, ai.WithEmbedText(userInput))
 	if err != nil {
 		return err
 	}
@@ -68,12 +70,10 @@ func googleaiEx(ctx context.Context) error {
 
 	_ = embedRes
 
-	var myRetriever *ai.Retriever
+	var myRetriever ai.Retriever
 
 	// [START retrieve]
-	retrieveRes, err := myRetriever.Retrieve(ctx, &ai.RetrieverRequest{
-		Document: ai.DocumentFromText(userInput, nil),
-	})
+	retrieveRes, err := ai.Retrieve(ctx, myRetriever, ai.WithRetrieverText(userInput))
 	if err != nil {
 		return err
 	}
@@ -81,11 +81,11 @@ func googleaiEx(ctx context.Context) error {
 
 	_ = retrieveRes
 
-	var myIndexer *ai.Indexer
+	var myIndexer ai.Indexer
 	var docsToIndex []*ai.Document
 
 	// [START index]
-	if err := myIndexer.Index(ctx, &ai.IndexerRequest{Documents: docsToIndex}); err != nil {
+	if err := ai.Index(ctx, myIndexer, ai.WithIndexerDocs(docsToIndex...)); err != nil {
 		return err
 	}
 	// [END index]

@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
+export { RuntimeEvent, RuntimeInfo } from '../manager/types';
+export { GenkitErrorData } from '../types/error';
 export * from './action';
 export * from './analytics';
 export * from './apis';
 export * from './env';
 export * from './eval';
 export * from './evaluators';
-export * from './flow';
 export * from './model';
 export * from './prompt';
 export * from './retrievers';

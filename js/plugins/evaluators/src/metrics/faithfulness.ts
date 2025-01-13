@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { BaseDataPoint, Score } from '@genkit-ai/ai/evaluator';
-import { ModelArgument } from '@genkit-ai/ai/model';
 import { loadPromptFile } from '@genkit-ai/dotprompt';
+import { Genkit, ModelArgument, z } from 'genkit';
+import { BaseEvalDataPoint, Score } from 'genkit/evaluator';
 import path from 'path';
-import * as z from 'zod';
 import { getDirName } from './helper.js';
 
 const LongFormResponseSchema = z.object({ statements: z.array(z.string()) });
@@ -27,14 +25,11 @@ const LongFormResponseSchema = z.object({ statements: z.array(z.string()) });
 const NliResponseBaseSchema = z.object({
   statement: z.string(),
   reason: z.string(),
-  verdict: z.union([z.literal(0), z.literal(1)]),
+  verdict: z.enum(['0', '1'] as const),
 });
 
 type NliResponseBase = z.infer<typeof NliResponseBaseSchema>;
-const NliResponseSchema = z.union([
-  NliResponseBaseSchema,
-  z.array(NliResponseBaseSchema),
-]);
+const NliResponseSchema = z.array(NliResponseBaseSchema);
 
 /**
  *
@@ -42,33 +37,48 @@ const NliResponseSchema = z.union([
 export async function faithfulnessScore<
   CustomModelOptions extends z.ZodTypeAny,
 >(
+  ai: Genkit,
   judgeLlm: ModelArgument<CustomModelOptions>,
-  dataPoint: BaseDataPoint,
+  dataPoint: BaseEvalDataPoint,
   judgeConfig?: CustomModelOptions
 ): Promise<Score> {
   try {
-    const { input, output, context } = dataPoint;
-    if (!context?.length) {
-      throw new Error('Context was not provided');
+    if (!dataPoint.input) {
+      throw new Error('Input was not provided');
     }
-    if (!output) {
+    if (!dataPoint.output) {
       throw new Error('Output was not provided');
     }
+    if (!dataPoint.context?.length) {
+      throw new Error('Context was not provided');
+    }
+
+    const input =
+      typeof dataPoint.input === 'string'
+        ? dataPoint.input
+        : JSON.stringify(dataPoint.input);
+    const output =
+      typeof dataPoint.output === 'string'
+        ? dataPoint.output
+        : JSON.stringify(dataPoint.output);
+    const context = dataPoint.context.map((i) => JSON.stringify(i));
+
     const longFormPrompt = await loadPromptFile(
+      ai.registry,
       path.resolve(getDirName(), '../../prompts/faithfulness_long_form.prompt')
     );
-    const longFormResponse = await generate({
+    const longFormResponse = await ai.generate({
       model: judgeLlm,
       config: judgeConfig,
       prompt: longFormPrompt.renderText({
-        question: input as string,
-        answer: output as string,
+        question: input,
+        answer: output,
       }),
       output: {
         schema: LongFormResponseSchema,
       },
     });
-    const parsedLongFormResponse = longFormResponse.output();
+    const parsedLongFormResponse = longFormResponse.output;
     let statements = parsedLongFormResponse?.statements ?? [];
     if (statements.length === 0) {
       throw new Error('No statements returned');
@@ -76,9 +86,10 @@ export async function faithfulnessScore<
     const allStatements = statements.map((s) => `statement: ${s}`).join('\n');
     const allContext = context.join('\n');
     const nliPrompt = await loadPromptFile(
+      ai.registry,
       path.resolve(getDirName(), '../../prompts/faithfulness_nli.prompt')
     );
-    const response = await generate({
+    const response = await ai.generate({
       model: judgeLlm,
       prompt: nliPrompt.renderText({
         context: allContext,
@@ -88,7 +99,7 @@ export async function faithfulnessScore<
         schema: NliResponseSchema,
       },
     });
-    const parsedResponse = response.output();
+    const parsedResponse = response.output;
     return nliResponseToScore(parsedResponse);
   } catch (err) {
     console.debug(
@@ -100,19 +111,15 @@ export async function faithfulnessScore<
   }
 }
 
-function nliResponseToScore(
-  input: NliResponseBase[] | NliResponseBase | null
-): Score {
+function nliResponseToScore(input: NliResponseBase[] | null): Score {
   if (!input) {
     throw new Error(`Evaluator response empty`);
   }
-  let responses: NliResponseBase[];
-  responses = Array.isArray(input) ? input : [input];
-  const faithfulStatements = responses.reduce((total, resp) => {
-    return total + resp.verdict;
+  const faithfulStatements = input.reduce((total, resp) => {
+    return total + (resp.verdict === '1' ? 1 : 0);
   }, 0);
   return {
-    score: faithfulStatements / responses.length,
-    details: { reasoning: responses.map((r) => r.reason).join('; ') },
+    score: faithfulStatements / input.length,
+    details: { reasoning: input.map((r) => r.reason).join('; ') },
   };
 }

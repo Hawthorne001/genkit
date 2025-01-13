@@ -22,11 +22,12 @@
 import {
   GenerationCommonConfigSchema,
   ModelArgument,
+  ModelMiddleware,
 } from '@genkit-ai/ai/model';
 import { ToolArgument } from '@genkit-ai/ai/tool';
-import { lookupSchema } from '@genkit-ai/core/registry';
+import { z } from '@genkit-ai/core';
+import { Registry } from '@genkit-ai/core/registry';
 import { JSONSchema, parseSchema, toJsonSchema } from '@genkit-ai/core/schema';
-import z from 'zod';
 import { picoschema } from './picoschema.js';
 
 /**
@@ -39,6 +40,9 @@ export interface PromptMetadata<
   /** The name of the prompt. */
   name?: string;
 
+  /** Description (intent) of the prompt, used when prompt passed as tool to an LLM. */
+  description?: string;
+
   /** The variant name for the prompt. */
   variant?: string;
 
@@ -47,9 +51,6 @@ export interface PromptMetadata<
 
   /** Names of tools (registered separately) to allow use of in this prompt. */
   tools?: ToolArgument[];
-
-  /** Number of candidates to generate by default. */
-  candidates?: number;
 
   /** Model configuration. Not all models support all options. */
   config?: z.infer<Options>;
@@ -79,6 +80,9 @@ export interface PromptMetadata<
 
   /** Arbitrary metadata to be used by code, tools, and libraries. */
   metadata?: Record<string, any>;
+
+  /** Middleware to be used with this model call. */
+  use?: ModelMiddleware[];
 }
 
 /**
@@ -86,10 +90,10 @@ export interface PromptMetadata<
  */
 export const PromptFrontmatterSchema = z.object({
   name: z.string().optional(),
+  description: z.string().optional(),
   variant: z.string().optional(),
   model: z.string().optional(),
   tools: z.array(z.string()).optional(),
-  candidates: z.number().optional(),
   config: GenerationCommonConfigSchema.passthrough().optional(),
   input: z
     .object({
@@ -123,32 +127,39 @@ function stripUndefinedOrNull(obj: any) {
   return obj;
 }
 
-function fmSchemaToSchema(fmSchema: any) {
+function fmSchemaToSchema(registry: Registry, fmSchema: any) {
   if (!fmSchema) return {};
-  if (typeof fmSchema === 'string') return lookupSchema(fmSchema);
+  if (typeof fmSchema === 'string') return registry.lookupSchema(fmSchema);
   return { jsonSchema: picoschema(fmSchema) };
 }
 
-export function toMetadata(attributes: unknown): Partial<PromptMetadata> {
+export function toMetadata(
+  registry: Registry,
+  attributes: unknown
+): Partial<PromptMetadata> {
   const fm = parseSchema<z.infer<typeof PromptFrontmatterSchema>>(attributes, {
     schema: PromptFrontmatterSchema,
   });
 
   let input: PromptMetadata['input'] | undefined;
   if (fm.input) {
-    input = { default: fm.input.default, ...fmSchemaToSchema(fm.input.schema) };
+    input = {
+      default: fm.input.default,
+      ...fmSchemaToSchema(registry, fm.input.schema),
+    };
   }
 
   let output: PromptMetadata['output'] | undefined;
   if (fm.output) {
     output = {
       format: fm.output.format,
-      ...fmSchemaToSchema(fm.output.schema),
+      ...fmSchemaToSchema(registry, fm.output.schema),
     };
   }
 
   return stripUndefinedOrNull({
     name: fm.name,
+    description: fm.description,
     variant: fm.variant,
     model: fm.model,
     config: fm.config,
@@ -156,7 +167,6 @@ export function toMetadata(attributes: unknown): Partial<PromptMetadata> {
     output,
     metadata: fm.metadata,
     tools: fm.tools,
-    candidates: fm.candidates,
   });
 }
 
@@ -188,6 +198,5 @@ export function toFrontmatter(md: PromptMetadata): PromptFrontmatter {
     tools: md.tools?.map((t) =>
       typeof t === 'string' ? t : (t as any).__action?.name || (t as any).name
     ),
-    candidates: md.candidates,
   });
 }

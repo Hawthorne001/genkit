@@ -17,9 +17,11 @@ package core
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
+	"github.com/firebase/genkit/go/core/tracing"
 	"github.com/firebase/genkit/go/internal/atype"
 	"github.com/firebase/genkit/go/internal/registry"
 )
@@ -29,7 +31,11 @@ func inc(_ context.Context, x int, _ noStream) (int, error) {
 }
 
 func TestActionRun(t *testing.T) {
-	a := newAction("inc", atype.Custom, nil, nil, inc)
+	r, err := registry.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := defineAction(r, "test", "inc", atype.Custom, nil, nil, inc)
 	got, err := a.Run(context.Background(), 3, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +46,11 @@ func TestActionRun(t *testing.T) {
 }
 
 func TestActionRunJSON(t *testing.T) {
-	a := newAction("inc", atype.Custom, nil, nil, inc)
+	r, err := registry.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := defineAction(r, "test", "inc", atype.Custom, nil, nil, inc)
 	input := []byte("3")
 	want := []byte("4")
 	got, err := a.RunJSON(context.Background(), input, nil)
@@ -66,7 +76,11 @@ func count(ctx context.Context, n int, cb func(context.Context, int) error) (int
 
 func TestActionStreaming(t *testing.T) {
 	ctx := context.Background()
-	a := newAction("count", atype.Custom, nil, nil, count)
+	r, err := registry.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := defineAction(r, "test", "count", atype.Custom, nil, nil, count)
 	const n = 3
 
 	// Non-streaming.
@@ -97,22 +111,23 @@ func TestActionStreaming(t *testing.T) {
 }
 
 func TestActionTracing(t *testing.T) {
-	ctx := context.Background()
-	const actionName = "TestTracing-inc"
-	a := newAction(actionName, atype.Custom, nil, nil, inc)
-	if _, err := a.Run(context.Background(), 3, nil); err != nil {
+	r, err := registry.New()
+	if err != nil {
 		t.Fatal(err)
 	}
-	// The dev TraceStore is registered by Init, called from TestMain.
-	ts := registry.Global.LookupTraceStore(registry.EnvironmentDev)
-	tds, _, err := ts.List(ctx, nil)
-	if err != nil {
+	provider := "test"
+	tc := tracing.NewTestOnlyTelemetryClient()
+	r.TracingState().WriteTelemetryImmediate(tc)
+	const actionName = "TestTracing-inc"
+	a := defineAction(r, provider, actionName, atype.Custom, nil, nil, inc)
+	if _, err := a.Run(context.Background(), 3, nil); err != nil {
 		t.Fatal(err)
 	}
 	// The same trace store is used for all tests, so there might be several traces.
 	// Look for this one, which has a unique name.
-	for _, td := range tds {
-		if td.DisplayName == actionName {
+	fullActionName := fmt.Sprintf("%s/%s", provider, actionName)
+	for _, td := range tc.Traces {
+		if td.DisplayName == fullActionName {
 			// Spot check: expect a single span.
 			if g, w := len(td.Spans), 1; g != w {
 				t.Errorf("got %d spans, want %d", g, w)

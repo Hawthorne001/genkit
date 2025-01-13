@@ -14,14 +14,10 @@
  * limitations under the License.
  */
 
-import { FlowInvokeEnvelopeMessage, FlowState } from '@genkit-ai/tools-common';
-import {
-  logger,
-  runInRunnerThenStop,
-  waitForFlowToComplete,
-} from '@genkit-ai/tools-common/utils';
+import { logger } from '@genkit-ai/tools-common/utils';
 import { Command } from 'commander';
 import { writeFile } from 'fs/promises';
+import { runWithManager } from '../utils/manager-utils';
 
 interface FlowRunOptions {
   wait?: boolean;
@@ -30,7 +26,7 @@ interface FlowRunOptions {
   auth?: string;
 }
 
-/** Command to start GenKit server, optionally without static file serving */
+/** Command to run a flow. */
 export const flowRun = new Command('flow:run')
   .description('run a flow using provided data as input')
   .argument('<flowName>', 'name of the flow to run')
@@ -47,38 +43,25 @@ export const flowRun = new Command('flow:run')
     'name of the output file to store the extracted data'
   )
   .action(async (flowName: string, data: string, options: FlowRunOptions) => {
-    await runInRunnerThenStop(async (runner) => {
+    await runWithManager(async (manager) => {
       logger.info(`Running '/flow/${flowName}' (stream=${options.stream})...`);
-      let state = (
-        await runner.runAction(
+      let result = (
+        await manager.runAction(
           {
             key: `/flow/${flowName}`,
-            input: {
-              start: {
-                input: data ? JSON.parse(data) : undefined,
-              },
-              auth: options.auth ? JSON.parse(options.auth) : undefined,
-            } as FlowInvokeEnvelopeMessage,
+            input: data ? JSON.parse(data) : undefined,
+            context: options.auth ? JSON.parse(options.auth) : undefined,
           },
           options.stream
             ? (chunk) => console.log(JSON.stringify(chunk, undefined, '  '))
             : undefined
         )
-      ).result as FlowState;
+      ).result;
 
-      if (!state.operation.done && options.wait) {
-        logger.info('Started flow run, waiting for it to complete...');
-        state = await waitForFlowToComplete(runner, flowName, state.flowId);
-      }
-      logger.info(
-        'Flow operation:\n' + JSON.stringify(state.operation, undefined, '  ')
-      );
+      logger.info('Result:\n' + JSON.stringify(result, undefined, '  '));
 
-      if (options.output && state.operation.result?.response) {
-        await writeFile(
-          options.output,
-          JSON.stringify(state.operation.result?.response, undefined, ' ')
-        );
+      if (options.output && result) {
+        await writeFile(options.output, JSON.stringify(result, undefined, ' '));
       }
     });
   });

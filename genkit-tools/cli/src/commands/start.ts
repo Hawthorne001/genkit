@@ -14,50 +14,74 @@
  * limitations under the License.
  */
 
-import { Runner } from '@genkit-ai/tools-common/runner';
 import { startServer } from '@genkit-ai/tools-common/server';
 import { logger } from '@genkit-ai/tools-common/utils';
-import * as clc from 'colorette';
+import { spawn } from 'child_process';
 import { Command } from 'commander';
+import getPort, { makeRange } from 'get-port';
+import open from 'open';
+import { startManager } from '../utils/manager-utils';
 
-interface StartOptions {
-  headless?: boolean;
-  port: string;
-  attach?: string;
+interface RunOptions {
+  noui?: boolean;
+  port?: string;
   open?: boolean;
 }
 
-/** Command to start GenKit server, optionally without static file serving */
+/** Command to run code in dev mode and/or the Dev UI. */
 export const start = new Command('start')
-  .description('run the app in dev mode and start a Developer UI')
-  .option(
-    '-x, --headless',
-    'Do not serve static UI files (for development)',
-    false
-  )
-  .option('-p, --port <number>', 'Port to serve on. Default is 4000', '4000')
-  .option('-o, --open', 'Open the browser with the Developer UI')
-  .option(
-    '-a, --attach <number>',
-    'Externally running dev process address to attach to'
-  )
-  .action(async (options: StartOptions) => {
-    const port = Number(options.port);
-    if (isNaN(port) || port < 0) {
-      logger.error(`"${options.port}" is not a valid port number`);
-      return;
+  .description('runs a command in Genkit dev mode')
+  .option('-n, --noui', 'do not start the Dev UI', false)
+  .option('-p, --port <port>', 'port for the Dev UI')
+  .option('-o, --open', 'Open the browser on UI start up')
+  .action(async (options: RunOptions) => {
+    let runtimePromise = Promise.resolve();
+    if (start.args.length > 0) {
+      runtimePromise = new Promise((urlResolver, reject) => {
+        const appProcess = spawn(start.args[0], start.args.slice(1), {
+          env: { ...process.env, GENKIT_ENV: 'dev' },
+          shell: process.platform === 'win32',
+        });
+
+        const originalStdIn = process.stdin;
+        appProcess.stderr?.pipe(process.stderr);
+        appProcess.stdout?.pipe(process.stdout);
+        process.stdin?.pipe(appProcess.stdin);
+
+        appProcess.on('error', (error): void => {
+          console.log(`Error in app process: ${error}`);
+          reject(error);
+          process.exitCode = 1;
+        });
+        appProcess.on('exit', (code) => {
+          process.stdin?.pipe(originalStdIn);
+          if (code === 0) {
+            urlResolver(undefined);
+          } else {
+            reject(new Error(`app process exited with code ${code}`));
+          }
+        });
+      });
     }
 
-    const runner = new Runner();
-    if (options.attach) {
-      try {
-        await runner.attach(options.attach);
-      } catch (e) {
-        logger.error(clc.red(clc.bold((e as Error).message)));
-        return;
+    let uiPromise = Promise.resolve();
+    if (!options.noui) {
+      let port: number;
+      if (options.port) {
+        port = Number(options.port);
+        if (isNaN(port) || port < 0) {
+          logger.error(`"${options.port}" is not a valid port number`);
+          return;
+        }
+      } else {
+        port = await getPort({ port: makeRange(4000, 4099) });
       }
-    } else {
-      await runner.start();
+      uiPromise = startManager(true).then((manager) =>
+        startServer(manager, port)
+      );
+      if (options.open) {
+        open(`http://localhost:${port}`);
+      }
     }
-    return startServer(runner, options.headless ?? false, port, !!options.open);
+    await Promise.all([runtimePromise, uiPromise]);
   });

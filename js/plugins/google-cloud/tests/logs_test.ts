@@ -14,25 +14,47 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { defineModel } from '@genkit-ai/ai/model';
 import {
-  configureGenkit,
-  FlowState,
-  FlowStateQuery,
-  FlowStateQueryResponse,
-  FlowStateStore,
-} from '@genkit-ai/core';
-import { registerFlowStateStore } from '@genkit-ai/core/registry';
-import { defineFlow, run, runFlow } from '@genkit-ai/flow';
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  it,
+  jest,
+} from '@jest/globals';
+import { ReadableSpan } from '@opentelemetry/sdk-trace-base';
+import { GenerateResponseData, Genkit, genkit, z } from 'genkit';
+import { SPAN_TYPE_ATTR, appendSpan } from 'genkit/tracing';
+import assert from 'node:assert';
+import { Writable } from 'stream';
 import {
   __addTransportStreamForTesting,
-  googleCloud,
-} from '@genkit-ai/google-cloud';
-import assert from 'node:assert';
-import { before, beforeEach, describe, it } from 'node:test';
-import { Writable } from 'stream';
-import { z } from 'zod';
+  __forceFlushSpansForTesting,
+  __getSpanExporterForTesting,
+  enableGoogleCloudTelemetry,
+} from '../src/index.js';
+
+jest.mock('../src/auth.js', () => {
+  const original = jest.requireActual('../src/auth.js');
+  return {
+    ...(original || {}),
+    resolveCurrentPrincipal: jest.fn().mockImplementation(() => {
+      return Promise.resolve({
+        projectId: 'test',
+        serviceAccountEmail: 'test@test.com',
+      });
+    }),
+    credentialsFromEnvironment: jest.fn().mockImplementation(() => {
+      return Promise.resolve({
+        projectId: 'test',
+        credentials: {
+          client_email: 'test@genkit.com',
+          private_key: '-----BEGIN PRIVATE KEY-----',
+        },
+      });
+    }),
+  };
+});
 
 describe('GoogleCloudLogs', () => {
   let logLines = '';
@@ -42,82 +64,78 @@ describe('GoogleCloudLogs', () => {
     next();
   };
 
-  before(async () => {
+  let ai: Genkit;
+
+  beforeAll(async () => {
+    process.env.GCLOUD_PROJECT = 'test';
     process.env.GENKIT_ENV = 'dev';
     __addTransportStreamForTesting(logStream);
-    const config = configureGenkit({
-      // Force GCP Plugin to use in-memory metrics exporter
-      plugins: [
-        googleCloud({
-          projectId: 'test',
-          telemetryConfig: {
-            forceDevExport: false,
-            metricExportIntervalMillis: 100,
-            metricExportTimeoutMillis: 100,
-          },
-        }),
-      ],
-      enableTracingAndMetrics: true,
-      telemetry: {
-        instrumentation: 'googleCloud',
-        logger: 'googleCloud',
-      },
+    await enableGoogleCloudTelemetry({
+      projectId: 'test',
+      forceDevExport: false,
+      metricExportIntervalMillis: 100,
+      metricExportTimeoutMillis: 100,
     });
-    registerFlowStateStore('dev', async () => new NoOpFlowStateStore());
-    // Wait for the telemetry plugin to be initialized
-    await config.getTelemetryConfig();
-    await waitForLogsInit();
+    ai = genkit({
+      // Force GCP Plugin to use in-memory metrics exporter
+      plugins: [],
+    });
+    await waitForLogsInit(ai, logLines);
   });
   beforeEach(async () => {
     logLines = '';
+    __getSpanExporterForTesting().reset();
+  });
+  afterAll(async () => {
+    await ai.stopServers();
   });
 
   it('writes path logs', async () => {
-    const testFlow = createFlow('testFlow');
+    const testFlow = createFlow(ai, 'testFlow');
 
-    await runFlow(testFlow);
+    await testFlow();
 
-    const logMessages = await getLogs();
+    await getExportedSpans();
+
+    const logMessages = await getLogs(1, 100, logLines);
     assert.equal(logMessages.includes('[info] Paths[testFlow]'), true);
   });
 
   it('writes error logs', async () => {
-    const testFlow = createFlow('testFlow', async () => {
-      const nothing = null;
-      nothing.something;
+    const testFlow = createFlow(ai, 'testFlow', async () => {
+      const nothing: { missing?: any } = { missing: 1 };
+      delete nothing.missing;
+      return nothing.missing.explode;
     });
 
     assert.rejects(async () => {
-      await runFlow(testFlow);
+      await testFlow();
     });
 
-    const logMessages = await getLogs();
+    await getExportedSpans();
+
+    const logMessages = await getLogs(1, 100, logLines);
+
     assert.equal(
       logMessages.includes(
-        '[error] Error[testFlow, TypeError] Cannot read properties of null ' +
-          "(reading 'something')"
+        "[error] Error[testFlow, TypeError] Cannot read properties of undefined (reading 'explode')"
       ),
       true
     );
-  });
+  }, 10000); //timeout
 
   it('writes generate logs', async () => {
-    const testModel = createModel('testModel', async () => {
+    const testModel = createModel(ai, 'testModel', async () => {
       return {
-        candidates: [
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: {
-              role: 'user',
-              content: [
-                {
-                  text: 'response',
-                },
-              ],
+        message: {
+          role: 'user',
+          content: [
+            {
+              text: 'response',
             },
-          },
-        ],
+          ],
+        },
+        finishReason: 'stop',
         usage: {
           inputTokens: 10,
           outputTokens: 14,
@@ -128,12 +146,12 @@ describe('GoogleCloudLogs', () => {
         },
       };
     });
-    const testFlow = createFlow('testFlow', async () => {
-      return await run('sub1', async () => {
-        return await run('sub2', async () => {
-          return await generate({
+    const testFlow = createFlowWithInput(ai, 'testFlow', async (input) => {
+      return await ai.run('sub1', async () => {
+        return await ai.run('sub2', async () => {
+          return await ai.generate({
             model: testModel,
-            prompt: 'test prompt',
+            prompt: `${input} prompt`,
             config: {
               temperature: 1.0,
               topK: 3,
@@ -145,92 +163,171 @@ describe('GoogleCloudLogs', () => {
       });
     });
 
-    await runFlow(testFlow);
+    await testFlow('test');
 
-    const logMessages = await getLogs();
+    await getExportedSpans();
+
+    const logMessages = await getLogs(1, 100, logLines);
     assert.equal(
       logMessages.includes(
-        '[info] Config[testFlow > sub1 > sub2 > testModel, testModel]'
+        '[info] Config[testFlow > sub1 > sub2 > generate > testModel, testModel]'
       ),
       true
     );
     assert.equal(
       logMessages.includes(
-        '[info] Input[testFlow > sub1 > sub2 > testModel, testModel]'
+        '[info] Input[testFlow > sub1 > sub2 > generate > testModel, testModel]'
       ),
       true
     );
     assert.equal(
       logMessages.includes(
-        '[info] Output[testFlow > sub1 > sub2 > testModel, testModel]'
+        '[info] Output[testFlow > sub1 > sub2 > generate > testModel, testModel]'
       ),
+      true
+    );
+    assert.equal(
+      logMessages.includes('[info] Input[testFlow, testFlow]'),
+      true
+    );
+    assert.equal(
+      logMessages.includes('[info] Output[testFlow, testFlow]'),
       true
     );
   });
 
-  /** Helper to create a flow with no inputs or outputs */
-  function createFlow(name: string, fn: () => Promise<void> = async () => {}) {
-    return defineFlow(
+  it('writes user feedback log', async () => {
+    await appendSpan(
+      'trace1',
+      'parent1',
       {
-        name,
-        inputSchema: z.void(),
-        outputSchema: z.void(),
+        name: 'user-feedback',
+        path: '/{flowName}',
+        metadata: {
+          subtype: 'userFeedback',
+          feedbackValue: 'negative',
+          textFeedback: 'terrible',
+        },
       },
-      fn
+      { [SPAN_TYPE_ATTR]: 'userEngagement' }
     );
-  }
 
-  /**
-   * Helper to create a model that returns the value produced by the given
-   * response function.
-   */
-  function createModel(
-    name: string,
-    respFn: () => Promise<GenerateResponseData>
-  ) {
-    return defineModel({ name }, (req) => respFn());
-  }
+    await getExportedSpans();
+    const logMessages = await getLogs(1, 100, logLines);
+    assert.equal(logMessages.includes('[info] UserFeedback[flowName]'), true);
+  });
 
-  async function waitForLogsInit() {
-    await import('winston');
-    const testFlow = createFlow('testFlow');
-    await runFlow(testFlow);
-    await getLogs(1);
-  }
+  it('writes user acceptance log', async () => {
+    await appendSpan(
+      'trace1',
+      'parent1',
+      {
+        name: 'user-acceptance',
+        path: '/{flowName}',
+        metadata: { subtype: 'userAcceptance', acceptanceValue: 'rejected' },
+      },
+      { [SPAN_TYPE_ATTR]: 'userEngagement' }
+    );
 
-  async function getLogs(
-    logCount: number = 1,
-    maxAttempts: number = 100
-  ): promise<String[]> {
-    var attempts = 0;
-    while (attempts++ < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      const found = logLines
-        .trim()
-        .split('\n')
-        .map((l) => l.trim());
-      if (found.length >= logCount) {
-        return found;
-      }
-    }
-    assert.fail(`Waiting for logs, but none have been written.`);
-  }
+    await getExportedSpans();
+    const logMessages = await getLogs(1, 100, logLines);
+    assert.equal(logMessages.includes('[info] UserAcceptance[flowName]'), true);
+  });
+
+  it('writes tool input and output logs', async () => {
+    const echoTool = ai.defineTool(
+      { name: 'echoTool', description: 'echo' },
+      async (input) => input
+    );
+    await echoTool('Helllooooo!');
+    await getExportedSpans();
+    const logMessages = await getLogs(2, 100, logLines);
+    assert.ok(logMessages.includes('[info] Input[echoTool, echoTool]'));
+    assert.ok(logMessages.includes('[info] Output[echoTool, echoTool]'));
+  });
 });
 
-class NoOpFlowStateStore implements FlowStateStore {
-  state: Record<string, string> = {};
+/** Helper to create a flow with no inputs or outputs */
+function createFlow(
+  ai: Genkit,
+  name: string,
+  fn: () => Promise<any> = async () => {}
+) {
+  return ai.defineFlow(
+    {
+      name,
+      inputSchema: z.void(),
+      outputSchema: z.void(),
+    },
+    fn
+  );
+}
 
-  load(id: string): Promise<FlowState | undefined> {
-    return Promise.resolve(undefined);
-  }
+function createFlowWithInput(
+  ai: Genkit,
+  name: string,
+  fn: (input: string) => Promise<any>
+) {
+  return ai.defineFlow(
+    {
+      name,
+      inputSchema: z.string(),
+      outputSchema: z.any(),
+    },
+    fn
+  );
+}
 
-  save(id: string, state: FlowState): Promise<void> {
-    return Promise.resolve();
-  }
+/**
+ * Helper to create a model that returns the value produced by the given
+ * response function.
+ */
+function createModel(
+  genkit: Genkit,
+  name: string,
+  respFn: () => Promise<GenerateResponseData>
+) {
+  return genkit.defineModel({ name }, (req) => respFn());
+}
 
-  async list(
-    query?: FlowStateQuery | undefined
-  ): Promise<FlowStateQueryResponse> {
-    return {};
+async function waitForLogsInit(genkit: Genkit, logLines: any) {
+  await import('winston');
+  const testFlow = createFlow(genkit, 'testFlow');
+  await testFlow();
+  await getLogs(1, 100, logLines);
+}
+
+async function getLogs(
+  logCount: number,
+  maxAttempts: number,
+  logLines: string
+): Promise<String[]> {
+  var attempts = 0;
+  while (attempts++ < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const found = logLines
+      .trim()
+      .split('\n')
+      .map((l) => l.trim());
+    if (found.length >= logCount) {
+      return found;
+    }
   }
+  assert.fail(`Waiting for logs, but none have been written.`);
+}
+
+/** Polls the in memory metric exporter until the genkit scope is found. */
+async function getExportedSpans(
+  maxAttempts: number = 200
+): Promise<ReadableSpan[]> {
+  __forceFlushSpansForTesting();
+  var attempts = 0;
+  while (attempts++ < maxAttempts) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const found = __getSpanExporterForTesting().getFinishedSpans();
+    if (found.length > 0) {
+      return found;
+    }
+  }
+  assert.fail(`Timed out while waiting for spans to be exported.`);
 }

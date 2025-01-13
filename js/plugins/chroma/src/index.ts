@@ -14,20 +14,11 @@
  * limitations under the License.
  */
 
-import { embed, EmbedderArgument } from '@genkit-ai/ai/embedder';
-import {
-  CommonRetrieverOptionsSchema,
-  defineIndexer,
-  defineRetriever,
-  Document,
-  indexerRef,
-  retrieverRef,
-} from '@genkit-ai/ai/retriever';
-import { genkitPlugin, PluginProvider } from '@genkit-ai/core';
 import {
   ChromaClient,
   Collection,
   CollectionMetadata,
+  Embeddings,
   IEmbeddingFunction,
   IncludeEnum,
   Metadata,
@@ -35,16 +26,30 @@ import {
   Where,
   WhereDocument,
 } from 'chromadb';
+import {
+  Document,
+  EmbedderArgument,
+  Genkit,
+  indexerRef,
+  retrieverRef,
+  z,
+} from 'genkit';
+import { GenkitPlugin, genkitPlugin } from 'genkit/plugin';
+import { CommonRetrieverOptionsSchema } from 'genkit/retriever';
 import { Md5 } from 'ts-md5';
-import * as z from 'zod';
 
 export { IncludeEnum };
 
 const WhereSchema: z.ZodType<Where> = z.any();
 const WhereDocumentSchema: z.ZodType<WhereDocument> = z.any();
 
+const IncludeOptionSchema = z
+  .array(z.enum(['documents', 'embeddings', 'metadatas', 'distances']))
+  .optional();
+type IncludeOption = z.infer<typeof IncludeOptionSchema>;
+
 const ChromaRetrieverOptionsSchema = CommonRetrieverOptionsSchema.extend({
-  include: z.array(z.nativeEnum(IncludeEnum)).optional(),
+  include: IncludeOptionSchema,
   where: WhereSchema.optional(),
   whereDocument: WhereDocumentSchema.optional(),
 });
@@ -55,37 +60,27 @@ type ChromaClientParams =
   | NativeChromaClientParams
   | (() => Promise<NativeChromaClientParams>);
 
+type ChromaPluginParams<
+  EmbedderCustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
+> = {
+  clientParams?: ChromaClientParams;
+  collectionName: string;
+  createCollectionIfMissing?: boolean;
+  embedder: EmbedderArgument<EmbedderCustomOptions>;
+  embedderOptions?: z.infer<EmbedderCustomOptions>;
+}[];
+
 /**
  * Chroma plugin that provides the Chroma retriever and indexer
  */
 export function chroma<EmbedderCustomOptions extends z.ZodTypeAny>(
-  params: {
-    clientParams?: ChromaClientParams;
-    collectionName: string;
-    createCollectionIfMissing?: boolean;
-    embedder: EmbedderArgument<EmbedderCustomOptions>;
-    embedderOptions?: z.infer<EmbedderCustomOptions>;
-  }[]
-): PluginProvider {
-  const plugin = genkitPlugin(
-    'chroma',
-    async (
-      params: {
-        clientParams?: ChromaClientParams;
-        collectionName: string;
-        createCollectionIfMissing?: boolean;
-        embedder: EmbedderArgument<EmbedderCustomOptions>;
-        embedderOptions?: z.infer<EmbedderCustomOptions>;
-      }[]
-    ) => ({
-      retrievers: params.map((i) => chromaRetriever(i)),
-      indexers: params.map((i) => chromaIndexer(i)),
-    })
-  );
-  return plugin(params);
+  params: ChromaPluginParams<EmbedderCustomOptions>
+): GenkitPlugin {
+  return genkitPlugin('chroma', async (ai: Genkit) => {
+    params.map((i) => chromaRetriever(ai, i));
+    params.map((i) => chromaIndexer(ai, i));
+  });
 }
-
-export default chroma;
 
 export const chromaRetrieverRef = (params: {
   collectionName: string;
@@ -116,17 +111,18 @@ export const chromaIndexerRef = (params: {
 /**
  * Configures a Chroma vector store retriever.
  */
-export function chromaRetriever<
-  EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  clientParams?: ChromaClientParams;
-  collectionName: string;
-  createCollectionIfMissing?: boolean;
-  embedder: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+export function chromaRetriever<EmbedderCustomOptions extends z.ZodTypeAny>(
+  ai: Genkit,
+  params: {
+    clientParams?: ChromaClientParams;
+    collectionName: string;
+    createCollectionIfMissing?: boolean;
+    embedder: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   const { embedder, collectionName, embedderOptions } = params;
-  return defineRetriever(
+  return ai.defineRetriever(
     {
       name: `chroma/${collectionName}`,
       configSchema: ChromaRetrieverOptionsSchema.optional(),
@@ -145,28 +141,30 @@ export function chromaRetriever<
         });
       }
 
-      const embedding = await embed({
+      const embedding = await ai.embed({
         embedder,
         content,
         options: embedderOptions,
       });
       const results = await collection.query({
         nResults: options?.k,
-        include: options?.include,
+        include: getIncludes(options?.include),
         where: options?.where,
         whereDocument: options?.whereDocument,
         queryEmbeddings: embedding,
       });
 
       const documents = results.documents[0];
-      const metadatas = results.metadatas[0];
+      const metadatas = results.metadatas;
+      const embeddings = results.embeddings;
+      const distances = results.distances;
 
       const combined = documents
         .map((d, i) => {
           if (d !== null) {
             return {
               document: d,
-              metadata: metadatas[i] ?? undefined,
+              metadata: constructMetadata(i, metadatas, embeddings, distances),
             };
           }
           return undefined;
@@ -185,22 +183,62 @@ export function chromaRetriever<
 }
 
 /**
+ * Helper method to compute effective Include enum. It always
+ * includes documents
+ */
+function getIncludes(includes: IncludeOption): IncludeEnum[] | undefined {
+  if (!includes) {
+    // Default behaviour
+    return undefined;
+  }
+
+  // Always include documents
+  let effectiveIncludes = [IncludeEnum.Documents];
+  effectiveIncludes = effectiveIncludes.concat(includes as IncludeEnum[]);
+  const includesSet = new Set(effectiveIncludes);
+  return Array.from(includesSet);
+}
+
+/**
+ * Helper method to construct metadata, including the optional {@link IncludeEnum} passed in config.
+ */
+function constructMetadata(
+  i: number,
+  metadatas: (Metadata | null)[][],
+  embeddings: Embeddings[] | null,
+  distances: number[][] | null
+): any {
+  var fullMetadata: Record<string, any> = {};
+  if (metadatas && metadatas[i]) {
+    fullMetadata.metadata = metadatas[i];
+  }
+  if (embeddings) {
+    fullMetadata.embedding = embeddings[i];
+  }
+  if (distances) {
+    fullMetadata.distances = distances[i];
+  }
+  return fullMetadata;
+}
+
+/**
  * Configures a Chroma indexer.
  */
-export function chromaIndexer<
-  EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  clientParams?: ChromaClientParams;
-  collectionName: string;
-  createCollectionIfMissing?: boolean;
-  embedder: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+export function chromaIndexer<EmbedderCustomOptions extends z.ZodTypeAny>(
+  ai: Genkit,
+  params: {
+    clientParams?: ChromaClientParams;
+    collectionName: string;
+    createCollectionIfMissing?: boolean;
+    embedder: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   const { collectionName, embedder, embedderOptions } = {
     ...params,
   };
 
-  return defineIndexer(
+  return ai.defineIndexer(
     {
       name: `chroma/${params.collectionName}`,
       configSchema: ChromaIndexerOptionsSchema,
@@ -222,7 +260,7 @@ export function chromaIndexer<
 
       const embeddings = await Promise.all(
         docs.map((doc) =>
-          embed({
+          ai.embed({
             embedder,
             content: doc,
             options: embedderOptions,
@@ -239,7 +277,7 @@ export function chromaIndexer<
         return {
           id,
           value,
-          document: docs[i].text(),
+          document: docs[i].text,
           metadata,
         };
       });
@@ -258,13 +296,16 @@ export function chromaIndexer<
  */
 export async function createChromaCollection<
   EmbedderCustomOptions extends z.ZodTypeAny,
->(params: {
-  name: string;
-  clientParams?: ChromaClientParams;
-  metadata?: CollectionMetadata;
-  embedder?: EmbedderArgument<EmbedderCustomOptions>;
-  embedderOptions?: z.infer<EmbedderCustomOptions>;
-}) {
+>(
+  ai: Genkit,
+  params: {
+    name: string;
+    clientParams?: ChromaClientParams;
+    metadata?: CollectionMetadata;
+    embedder?: EmbedderArgument<EmbedderCustomOptions>;
+    embedderOptions?: z.infer<EmbedderCustomOptions>;
+  }
+) {
   let chromaEmbedder: IEmbeddingFunction | undefined = undefined;
   const embedder = params.embedder;
   if (!!embedder) {
@@ -272,7 +313,7 @@ export async function createChromaCollection<
       generate(texts: string[]) {
         return Promise.all(
           texts.map((text) =>
-            embed({
+            ai.embed({
               embedder,
               content: text,
               options: params.embedderOptions,

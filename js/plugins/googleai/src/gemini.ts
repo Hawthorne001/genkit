@@ -15,13 +15,40 @@
  */
 
 import {
+  FileDataPart,
+  FunctionCallingMode,
+  FunctionCallPart,
+  FunctionDeclaration,
+  FunctionResponsePart,
+  GenerateContentCandidate as GeminiCandidate,
+  Content as GeminiMessage,
+  Part as GeminiPart,
+  GenerateContentResponse,
+  GenerationConfig,
+  GenerativeModel,
+  GoogleGenerativeAI,
+  InlineDataPart,
+  RequestOptions,
+  SchemaType,
+  StartChatParams,
+  Tool,
+  ToolConfig,
+} from '@google/generative-ai';
+import {
+  Genkit,
+  GENKIT_CLIENT_HEADER,
+  GenkitError,
+  JSONSchema,
+  z,
+} from 'genkit';
+import {
   CandidateData,
-  defineModel,
   GenerationCommonConfigSchema,
   getBasicUsageStats,
   MediaPart,
   MessageData,
   ModelAction,
+  ModelInfo,
   ModelMiddleware,
   modelRef,
   ModelReference,
@@ -29,30 +56,14 @@ import {
   ToolDefinitionSchema,
   ToolRequestPart,
   ToolResponsePart,
-} from '@genkit-ai/ai/model';
+} from 'genkit/model';
 import {
   downloadRequestMedia,
   simulateSystemPrompt,
-} from '@genkit-ai/ai/model/middleware';
-import { GENKIT_CLIENT_HEADER } from '@genkit-ai/core';
-import {
-  FunctionCallPart,
-  FunctionDeclaration,
-  FunctionDeclarationSchemaType,
-  FunctionResponsePart,
-  GenerateContentCandidate as GeminiCandidate,
-  Content as GeminiMessage,
-  Part as GeminiPart,
-  GenerateContentResponse,
-  GenerationConfig,
-  GoogleGenerativeAI,
-  InlineDataPart,
-  RequestOptions,
-  StartChatParams,
-  Tool,
-} from '@google/generative-ai';
+} from 'genkit/model/middleware';
 import process from 'process';
-import z from 'zod';
+import { handleCacheIfNeeded } from './context-caching';
+import { extractCacheConfig } from './context-caching/utils';
 
 const SafetySettingsSchema = z.object({
   category: z.enum([
@@ -70,16 +81,24 @@ const SafetySettingsSchema = z.object({
   ]),
 });
 
-const GeminiConfigSchema = GenerationCommonConfigSchema.extend({
+export const GeminiConfigSchema = GenerationCommonConfigSchema.extend({
   safetySettings: z.array(SafetySettingsSchema).optional(),
   codeExecution: z.union([z.boolean(), z.object({}).strict()]).optional(),
+  contextCache: z.boolean().optional(),
+  functionCallingConfig: z
+    .object({
+      mode: z.enum(['MODE_UNSPECIFIED', 'AUTO', 'ANY', 'NONE']).optional(),
+      allowedFunctionNames: z.array(z.string()).optional(),
+    })
+    .optional(),
 });
+export type GeminiConfig = z.infer<typeof GeminiConfigSchema>;
 
-export const geminiPro = modelRef({
-  name: 'googleai/gemini-pro',
+export const gemini10Pro = modelRef({
+  name: 'googleai/gemini-1.0-pro',
   info: {
     label: 'Google AI - Gemini Pro',
-    versions: ['gemini-1.0-pro', 'gemini-1.0-pro-latest', 'gemini-1.0-pro-001'],
+    versions: ['gemini-pro', 'gemini-1.0-pro-latest', 'gemini-1.0-pro-001'],
     supports: {
       multiturn: true,
       media: false,
@@ -90,24 +109,8 @@ export const geminiPro = modelRef({
   configSchema: GeminiConfigSchema,
 });
 
-export const geminiProVision = modelRef({
-  name: 'googleai/gemini-pro-vision',
-  info: {
-    label: 'Google AI - Gemini Pro Vision',
-    // none declared on https://ai.google.dev/models/gemini#model-variations
-    versions: [],
-    supports: {
-      multiturn: true,
-      media: true,
-      tools: false,
-      systemRole: false,
-    },
-  },
-  configSchema: GeminiConfigSchema,
-});
-
 export const gemini15Pro = modelRef({
-  name: 'googleai/gemini-1.5-pro-latest',
+  name: 'googleai/gemini-1.5-pro',
   info: {
     label: 'Google AI - Gemini 1.5 Pro',
     supports: {
@@ -115,15 +118,18 @@ export const gemini15Pro = modelRef({
       media: true,
       tools: true,
       systemRole: true,
-      output: ['text', 'json'],
     },
-    versions: ['gemini-1.5-pro-001'],
+    versions: [
+      'gemini-1.5-pro-latest',
+      'gemini-1.5-pro-001',
+      'gemini-1.5-pro-002',
+    ],
   },
   configSchema: GeminiConfigSchema,
 });
 
 export const gemini15Flash = modelRef({
-  name: 'googleai/gemini-1.5-flash-latest',
+  name: 'googleai/gemini-1.5-flash',
   info: {
     label: 'Google AI - Gemini 1.5 Flash',
     supports: {
@@ -131,21 +137,41 @@ export const gemini15Flash = modelRef({
       media: true,
       tools: true,
       systemRole: true,
-      output: ['text', 'json'],
+      // @ts-ignore
+      contextCache: true,
     },
-    versions: ['gemini-1.5-flash-001'],
+    versions: [
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-001',
+      'gemini-1.5-flash-002',
+    ],
   },
   configSchema: GeminiConfigSchema,
 });
 
-export const geminiUltra = modelRef({
-  name: 'googleai/gemini-ultra',
+export const gemini15Flash8b = modelRef({
+  name: 'googleai/gemini-1.5-flash-8b',
   info: {
-    label: 'Google AI - Gemini Ultra',
+    label: 'Google AI - Gemini 1.5 Flash',
+    supports: {
+      multiturn: true,
+      media: true,
+      tools: true,
+      systemRole: true,
+    },
+    versions: ['gemini-1.5-flash-8b-latest', 'gemini-1.5-flash-8b-001'],
+  },
+  configSchema: GeminiConfigSchema,
+});
+
+export const gemini20FlashExp = modelRef({
+  name: 'googleai/gemini-2.0-flash-exp',
+  info: {
+    label: 'Google AI - Gemini 2.0 Flash (Experimental)',
     versions: [],
     supports: {
       multiturn: true,
-      media: false,
+      media: true,
       tools: true,
       systemRole: true,
     },
@@ -153,27 +179,98 @@ export const geminiUltra = modelRef({
   configSchema: GeminiConfigSchema,
 });
 
-export const SUPPORTED_V1_MODELS: Record<
-  string,
-  ModelReference<z.ZodTypeAny>
-> = {
-  'gemini-pro': geminiPro,
-  'gemini-pro-vision': geminiProVision,
-  // 'gemini-ultra': geminiUltra,
+export const SUPPORTED_V1_MODELS = {
+  'gemini-1.0-pro': gemini10Pro,
 };
 
-export const SUPPORTED_V15_MODELS: Record<
-  string,
-  ModelReference<z.ZodTypeAny>
-> = {
-  'gemini-1.5-pro-latest': gemini15Pro,
-  'gemini-1.5-flash-latest': gemini15Flash,
+export const SUPPORTED_V15_MODELS = {
+  'gemini-1.5-pro': gemini15Pro,
+  'gemini-1.5-flash': gemini15Flash,
+  'gemini-1.5-flash-8b': gemini15Flash8b,
+  'gemini-2.0-flash-exp': gemini20FlashExp,
 };
 
-const SUPPORTED_MODELS = {
+export const GENERIC_GEMINI_MODEL = modelRef({
+  name: 'googleai/gemini',
+  configSchema: GeminiConfigSchema,
+  info: {
+    label: 'Google Gemini',
+    supports: {
+      multiturn: true,
+      media: true,
+      tools: true,
+      systemRole: true,
+    },
+  },
+});
+
+export const SUPPORTED_GEMINI_MODELS = {
   ...SUPPORTED_V1_MODELS,
   ...SUPPORTED_V15_MODELS,
-};
+} as const;
+
+function longestMatchingPrefix(version: string, potentialMatches: string[]) {
+  return potentialMatches
+    .filter((p) => version.startsWith(p))
+    .reduce(
+      (longest, current) =>
+        current.length > longest.length ? current : longest,
+      ''
+    );
+}
+
+/**
+ * Known model names, to allow code completion for convenience. Allows other model names.
+ */
+export type GeminiVersionString =
+  | keyof typeof SUPPORTED_GEMINI_MODELS
+  | (string & {});
+
+/**
+ * Returns a reference to a model that can be used in generate calls.
+ *
+ * ```js
+ * await ai.generate({
+ *   prompt: 'hi',
+ *   model: gemini('gemini-1.5-flash')
+ * });
+ * ```
+ */
+export function gemini(
+  version: GeminiVersionString,
+  options: GeminiConfig = {}
+): ModelReference<typeof GeminiConfigSchema> {
+  const nearestModel = nearestGeminiModelRef(version);
+  return modelRef({
+    name: `googleai/${version}`,
+    config: options,
+    configSchema: GeminiConfigSchema,
+    info: {
+      ...nearestModel.info,
+      // If exact suffix match for a known model, use its label, otherwise create a new label
+      label: nearestModel.name.endsWith(version)
+        ? nearestModel.info?.label
+        : `Google AI - ${version}`,
+    },
+  });
+}
+
+function nearestGeminiModelRef(
+  version: GeminiVersionString,
+  options: GeminiConfig = {}
+): ModelReference<typeof GeminiConfigSchema> {
+  const matchingKey = longestMatchingPrefix(
+    version,
+    Object.keys(SUPPORTED_GEMINI_MODELS)
+  );
+  if (matchingKey) {
+    return SUPPORTED_GEMINI_MODELS[matchingKey].withConfig({
+      ...options,
+      version,
+    });
+  }
+  return GENERIC_GEMINI_MODEL.withConfig({ ...options, version });
+}
 
 function toGeminiRole(
   role: MessageData['role'],
@@ -202,7 +299,7 @@ function toGeminiRole(
 }
 
 function convertSchemaProperty(property) {
-  if (!property) {
+  if (!property || !property.type) {
     return null;
   }
   if (property.type === 'object') {
@@ -211,18 +308,18 @@ function convertSchemaProperty(property) {
       nestedProperties[key] = convertSchemaProperty(property.properties[key]);
     });
     return {
-      type: FunctionDeclarationSchemaType.OBJECT,
+      type: SchemaType.OBJECT,
       properties: nestedProperties,
       required: property.required,
     };
   } else if (property.type === 'array') {
     return {
-      type: FunctionDeclarationSchemaType.ARRAY,
+      type: SchemaType.ARRAY,
       items: convertSchemaProperty(property.items),
     };
   } else {
     return {
-      type: FunctionDeclarationSchemaType[property.type.toUpperCase()],
+      type: SchemaType[property.type.toUpperCase()],
     };
   }
 }
@@ -245,6 +342,16 @@ function toInlineData(part: MediaPart): InlineDataPart {
     part.media.contentType ||
     dataUrl.substring(dataUrl.indexOf(':')! + 1, dataUrl.indexOf(';'));
   return { inlineData: { mimeType: contentType, data: b64Data } };
+}
+
+function toFileData(part: MediaPart): FileDataPart {
+  if (!part.media.contentType)
+    throw new Error(
+      'Must supply a `contentType` when sending File URIs to Gemini.'
+    );
+  return {
+    fileData: { mimeType: part.media.contentType, fileUri: part.media.url },
+  };
 }
 
 function fromInlineData(inlinePart: InlineDataPart): MediaPart {
@@ -360,18 +467,21 @@ function toCustomPart(part: Part): GeminiPart {
 }
 
 function toGeminiPart(part: Part): GeminiPart {
-  if (part.text !== undefined) return { text: part.text };
-  if (part.media) return toInlineData(part);
+  if (part.text !== undefined) return { text: part.text || ' ' };
+  if (part.media) {
+    if (part.media.url.startsWith('data:')) return toInlineData(part);
+    return toFileData(part);
+  }
   if (part.toolRequest) return toFunctionCall(part);
   if (part.toolResponse) return toFunctionResponse(part);
   if (part.custom) return toCustomPart(part);
-  throw new Error('Unsupported Part type');
+  throw new Error('Unsupported Part type' + JSON.stringify(part));
 }
 
 function fromGeminiPart(part: GeminiPart, jsonMode: boolean): Part {
-  if (jsonMode && part.text !== undefined) {
-    return { data: JSON.parse(part.text) };
-  }
+  // if (jsonMode && part.text !== undefined) {
+  //   return { data: JSON.parse(part.text) };
+  // }
   if (part.text !== undefined) return { text: part.text };
   if (part.inlineData) return fromInlineData(part);
   if (part.functionCall) return fromFunctionCall(part);
@@ -436,17 +546,38 @@ export function fromGeminiCandidate(
   };
 }
 
+export function cleanSchema(schema: JSONSchema): JSONSchema {
+  const out = structuredClone(schema);
+  for (const key in out) {
+    if (key === '$schema' || key === 'additionalProperties') {
+      delete out[key];
+      continue;
+    }
+    if (typeof out[key] === 'object') {
+      out[key] = cleanSchema(out[key]);
+    }
+    // Zod nullish() and picoschema optional fields will produce type `["string", "null"]`
+    // which is not supported by the model API. Convert them to just `"string"`.
+    if (key === 'type' && Array.isArray(out[key])) {
+      // find the first that's not `null`.
+      out[key] = out[key].find((t) => t !== 'null');
+    }
+  }
+  return out;
+}
+
 /**
- *
+ * Defines a new GoogleAI model.
  */
-export function googleAIModel(
+export function defineGoogleAIModel(
+  ai: Genkit,
   name: string,
   apiKey?: string,
   apiVersion?: string,
-  baseUrl?: string
+  baseUrl?: string,
+  info?: ModelInfo,
+  defaultConfig?: GeminiConfig
 ): ModelAction {
-  const modelName = `googleai/${name}`;
-
   if (!apiKey) {
     apiKey = process.env.GOOGLE_GENAI_API_KEY || process.env.GOOGLE_API_KEY;
   }
@@ -456,22 +587,49 @@ export function googleAIModel(
         'For more details see https://firebase.google.com/docs/genkit/plugins/google-genai'
     );
   }
+  const apiModelName = name.startsWith('googleai/')
+    ? name.substring('googleai/'.length)
+    : name;
 
-  const model: ModelReference<z.ZodTypeAny> = SUPPORTED_MODELS[name];
-  if (!model) throw new Error(`Unsupported model: ${name}`);
+  const model: ModelReference<z.ZodTypeAny> =
+    SUPPORTED_GEMINI_MODELS[name] ??
+    modelRef({
+      name: `googleai/${apiModelName}`,
+      info: {
+        label: `Google AI - ${apiModelName}`,
+        supports: {
+          multiturn: true,
+          media: true,
+          tools: true,
+          systemRole: true,
+          output: ['text', 'json'],
+        },
+        ...info,
+      },
+      configSchema: GeminiConfigSchema,
+    });
 
   const middleware: ModelMiddleware[] = [];
   if (SUPPORTED_V1_MODELS[name]) {
     middleware.push(simulateSystemPrompt());
   }
-  if (model?.info?.supports?.media) {
+  if (model.info?.supports?.media) {
     // the gemini api doesn't support downloading media from http(s)
-    middleware.push(downloadRequestMedia({ maxBytes: 1024 * 1024 * 10 }));
+    middleware.push(
+      downloadRequestMedia({
+        maxBytes: 1024 * 1024 * 10,
+        // don't downlaod files that have been uploaded using the Files API
+        filter: (part) =>
+          !part.media.url.startsWith(
+            'https://generativelanguage.googleapis.com/'
+          ),
+      })
+    );
   }
 
-  return defineModel(
+  return ai.defineModel(
     {
-      name: modelName,
+      name: model.name,
       ...model.info,
       configSchema: model.configSchema,
       use: middleware,
@@ -484,21 +642,18 @@ export function googleAIModel(
       if (apiVersion) {
         options.baseUrl = baseUrl;
       }
-      const client = new GoogleGenerativeAI(apiKey!).getGenerativeModel(
-        {
-          model: request.config?.version || model.version || name,
-        },
-        options
-      );
+      const requestConfig: z.infer<typeof GeminiConfigSchema> = {
+        ...defaultConfig,
+        ...request.config,
+      };
 
-      // make a copy so that modifying the request will not produce side-effects
+      // Make a copy so that modifying the request will not produce side-effects
       const messages = [...request.messages];
       if (messages.length === 0) throw new Error('No messages provided.');
 
       // Gemini does not support messages with role system and instead expects
       // systemInstructions to be provided as a separate input. The first
       // message detected with role=system will be used for systemInstructions.
-      // Any additional system messages may be considered to be "exceptional".
       let systemInstruction: GeminiMessage | undefined = undefined;
       if (SUPPORTED_V15_MODELS[name]) {
         const systemMessage = messages.find((m) => m.role === 'system');
@@ -507,28 +662,15 @@ export function googleAIModel(
           systemInstruction = toGeminiSystemInstruction(systemMessage);
         }
       }
-      const generationConfig: GenerationConfig = {
-        candidateCount: request.candidates || undefined,
-        temperature: request.config?.temperature,
-        maxOutputTokens: request.config?.maxOutputTokens,
-        topK: request.config?.topK,
-        topP: request.config?.topP,
-        stopSequences: request.config?.stopSequences,
-        responseMimeType:
-          request.output?.format === 'json' || request.output?.schema
-            ? 'application/json'
-            : undefined,
-      };
 
       const tools: Tool[] = [];
-
       if (request.tools?.length) {
         tools.push({
           functionDeclarations: request.tools.map(toGeminiTool),
         });
       }
 
-      if (request.config?.codeExecution) {
+      if (requestConfig.codeExecution) {
         tools.push({
           codeExecution:
             request.config.codeExecution === true
@@ -537,27 +679,100 @@ export function googleAIModel(
         });
       }
 
-      const chatRequest = {
-        systemInstruction,
-        generationConfig,
-        tools,
-        history: messages
-          .slice(0, -1)
-          .map((message) => toGeminiMessage(message, model)),
-        safetySettings: request.config?.safetySettings,
-      } as StartChatParams;
-      const msg = toGeminiMessage(messages[messages.length - 1], model);
+      let toolConfig: ToolConfig | undefined;
+      if (
+        requestConfig.functionCallingConfig &&
+        // This is a workround for issue: https://github.com/firebase/genkit/issues/1520
+        // TODO: remove this when the issue is resolved upstream in the Gemini API
+        !messages.at(-1)?.content.find((c) => c.toolResponse)
+      ) {
+        toolConfig = {
+          functionCallingConfig: {
+            allowedFunctionNames:
+              requestConfig.functionCallingConfig.allowedFunctionNames,
+            mode: toGeminiFunctionMode(
+              requestConfig.functionCallingConfig.mode
+            ),
+          },
+        };
+      }
+
+      // Cannot use tools with JSON mode
       const jsonMode =
-        request.output?.format === 'json' || !!request.output?.schema;
+        (request.output?.format === 'json' ||
+          request.output?.contentType === 'application/json') &&
+        tools.length === 0;
+
+      const generationConfig: GenerationConfig = {
+        candidateCount: request.candidates || undefined,
+        temperature: requestConfig.temperature,
+        maxOutputTokens: requestConfig.maxOutputTokens,
+        topK: requestConfig.topK,
+        topP: requestConfig.topP,
+        stopSequences: requestConfig.stopSequences,
+        responseMimeType: jsonMode ? 'application/json' : undefined,
+      };
+
+      if (request.output?.constrained && jsonMode) {
+        generationConfig.responseSchema = cleanSchema(request.output.schema);
+      }
+
+      const msg = toGeminiMessage(messages[messages.length - 1], model);
+
       const fromJSONModeScopedGeminiCandidate = (
         candidate: GeminiCandidate
       ) => {
         return fromGeminiCandidate(candidate, jsonMode);
       };
+
+      let chatRequest: StartChatParams = {
+        systemInstruction,
+        generationConfig,
+        tools: tools.length ? tools : undefined,
+        toolConfig,
+        history: messages
+          .slice(0, -1)
+          .map((message) => toGeminiMessage(message, model)),
+        safetySettings: requestConfig.safetySettings,
+      } as StartChatParams;
+      const modelVersion = (request.config?.version ||
+        model.version ||
+        name) as string;
+      const cacheConfigDetails = extractCacheConfig(request);
+
+      const { chatRequest: updatedChatRequest, cache } =
+        await handleCacheIfNeeded(
+          apiKey!,
+          request,
+          chatRequest,
+          modelVersion,
+          cacheConfigDetails
+        );
+
+      const client = new GoogleGenerativeAI(apiKey!);
+      let genModel: GenerativeModel;
+
+      if (cache) {
+        genModel = client.getGenerativeModelFromCachedContent(
+          cache,
+          {
+            model: modelVersion,
+          },
+          options
+        );
+      } else {
+        genModel = client.getGenerativeModel(
+          {
+            model: modelVersion,
+          },
+          options
+        );
+      }
+
       if (streamingCallback) {
-        const result = await client
-          .startChat(chatRequest)
-          .sendMessageStream(msg.parts);
+        const result = await genModel
+          .startChat(updatedChatRequest)
+          .sendMessageStream(msg.parts, options);
         for await (const item of result.stream) {
           (item as GenerateContentResponse).candidates?.forEach((candidate) => {
             const c = fromJSONModeScopedGeminiCandidate(candidate);
@@ -568,22 +783,28 @@ export function googleAIModel(
           });
         }
         const response = await result.response;
-        if (!response.candidates?.length) {
-          throw new Error('No valid candidates returned.');
+        const candidates = response.candidates || [];
+        if (response.candidates?.['undefined']) {
+          candidates.push(response.candidates['undefined']);
+        }
+        if (!candidates.length) {
+          throw new GenkitError({
+            status: 'FAILED_PRECONDITION',
+            message: 'No valid candidates returned.',
+          });
         }
         return {
-          candidates:
-            response.candidates?.map(fromJSONModeScopedGeminiCandidate) || [],
+          candidates: candidates.map(fromJSONModeScopedGeminiCandidate) || [],
           custom: response,
         };
       } else {
-        const result = await client
-          .startChat(chatRequest)
-          .sendMessage(msg.parts);
+        const result = await genModel
+          .startChat(updatedChatRequest)
+          .sendMessage(msg.parts, options);
         if (!result.response.candidates?.length)
           throw new Error('No valid candidates returned.');
         const responseCandidates =
-          result.response.candidates?.map(fromJSONModeScopedGeminiCandidate) ||
+          result.response.candidates.map(fromJSONModeScopedGeminiCandidate) ||
           [];
         return {
           candidates: responseCandidates,
@@ -598,4 +819,28 @@ export function googleAIModel(
       }
     }
   );
+}
+
+function toGeminiFunctionMode(
+  genkitMode: string | undefined
+): FunctionCallingMode | undefined {
+  if (genkitMode === undefined) {
+    return undefined;
+  }
+  switch (genkitMode) {
+    case 'MODE_UNSPECIFIED': {
+      return FunctionCallingMode.MODE_UNSPECIFIED;
+    }
+    case 'ANY': {
+      return FunctionCallingMode.ANY;
+    }
+    case 'AUTO': {
+      return FunctionCallingMode.AUTO;
+    }
+    case 'NONE': {
+      return FunctionCallingMode.NONE;
+    }
+    default:
+      throw new Error(`unsupported function calling mode: ${genkitMode}`);
+  }
 }

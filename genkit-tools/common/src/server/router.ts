@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 import { initTRPC, TRPCError } from '@trpc/server';
-import { getEvalStore } from '../eval';
-import { Runner } from '../runner/runner';
-import { GenkitToolsError } from '../runner/types';
+import { z } from 'zod';
+import { getDatasetStore, getEvalStore, runNewEvaluation } from '../eval';
+import { RuntimeManager } from '../manager/manager';
+import { GenkitToolsError, RuntimeInfo } from '../manager/types';
 import { Action } from '../types/action';
 import * as apis from '../types/apis';
 import { EnvironmentVariable } from '../types/env';
@@ -34,10 +35,8 @@ const t = initTRPC.create({
         ...shape,
         data: {
           ...shape.data,
-          genkitErrorMessage: (error.cause.data as Record<string, unknown>)
-            .message,
-          genkitErrorDetails: (error.cause.data as Record<string, unknown>)
-            .details,
+          genkitErrorMessage: error.cause.data.message,
+          genkitErrorDetails: error.cause.data.details,
         },
       };
     }
@@ -117,12 +116,12 @@ const loggedProcedure = t.procedure.use(async (opts) => {
 });
 
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
-export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
+export const TOOLS_SERVER_ROUTER = (manager: RuntimeManager) =>
   t.router({
     /** Retrieves all runnable actions. */
     listActions: loggedProcedure.query(
       async (): Promise<Record<string, Action>> => {
-        return runner.listActions();
+        return manager.listActions();
       }
     ),
 
@@ -130,7 +129,7 @@ export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
     runAction: loggedProcedure
       .input(apis.RunActionRequestSchema)
       .mutation(async ({ input }) => {
-        return runner.runAction(input);
+        return manager.runAction(input);
       }),
 
     /** Generate a .prompt file from messages and model config. */
@@ -149,28 +148,14 @@ export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
     listTraces: loggedProcedure
       .input(apis.ListTracesRequestSchema)
       .query(async ({ input }) => {
-        return runner.listTraces(input);
+        return manager.listTraces(input);
       }),
 
     /** Retrieves a trace for a given ID. */
     getTrace: loggedProcedure
       .input(apis.GetTraceRequestSchema)
       .query(async ({ input }) => {
-        return runner.getTrace(input);
-      }),
-
-    /** Retrieves all flow states for a given environment (e.g. dev or prod). */
-    listFlowStates: loggedProcedure
-      .input(apis.ListFlowStatesRequestSchema)
-      .query(async ({ input }) => {
-        return runner.listFlowStates(input);
-      }),
-
-    /** Retrieves a flow state for a given ID. */
-    getFlowState: loggedProcedure
-      .input(apis.GetFlowStateRequestSchema)
-      .query(async ({ input }) => {
-        return runner.getFlowState(input);
+        return manager.getTrace(input);
       }),
 
     /** Retrieves all eval run keys */
@@ -190,9 +175,8 @@ export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
       .output(evals.EvalRunSchema)
       .query(async ({ input }) => {
         const parts = input.name.split('/');
-        const evalRunId = parts[3];
-        const actionId = parts[1] !== '-' ? parts[1] : undefined;
-        const evalRun = await getEvalStore().load(evalRunId, actionId);
+        const evalRunId = parts[1];
+        const evalRun = await getEvalStore().load(evalRunId);
         if (!evalRun) {
           throw new TRPCError({
             code: 'NOT_FOUND',
@@ -200,6 +184,59 @@ export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
           });
         }
         return evalRun;
+      }),
+
+    /** Retrieves all eval datasets */
+    listDatasets: loggedProcedure
+      .output(z.array(evals.DatasetMetadataSchema))
+      .query(async () => {
+        const response = await getDatasetStore().listDatasets();
+        return response;
+      }),
+
+    /** Retrieves an existing dataset */
+    getDataset: loggedProcedure
+      .input(z.string())
+      .output(evals.DatasetSchema)
+      .query(async ({ input }) => {
+        const response = await getDatasetStore().getDataset(input);
+        return response;
+      }),
+
+    /** Creates a new dataset */
+    createDataset: loggedProcedure
+      .input(apis.CreateDatasetRequestSchema)
+      .output(evals.DatasetMetadataSchema)
+      .mutation(async ({ input }) => {
+        const response = await getDatasetStore().createDataset(input);
+        return response;
+      }),
+
+    /** Updates an exsting dataset */
+    updateDataset: loggedProcedure
+      .input(apis.UpdateDatasetRequestSchema)
+      .output(evals.DatasetMetadataSchema)
+      .mutation(async ({ input }) => {
+        const response = await getDatasetStore().updateDataset(input);
+        return response;
+      }),
+
+    /** Deletes an exsting dataset */
+    deleteDataset: loggedProcedure
+      .input(z.string())
+      .output(z.void())
+      .mutation(async ({ input }) => {
+        const response = await getDatasetStore().deleteDataset(input);
+        return response;
+      }),
+
+    /** Start new evaluation run */
+    runNewEvaluation: loggedProcedure
+      .input(apis.RunNewEvaluationRequestSchema)
+      .output(evals.EvalRunKeySchema)
+      .mutation(async ({ input }) => {
+        const response = await runNewEvaluation(manager, input);
+        return response;
       }),
 
     /** Send a screen view analytics event */
@@ -216,6 +253,15 @@ export const TOOLS_SERVER_ROUTER = (runner: Runner) =>
         //TODO(michaeldoyle): packageVersion: ???,
         environmentVars: parseEnv(process.env),
       };
+    }),
+
+    /**
+     * Get the current active Genkit Runtime. Useful for one-off requests.
+     * Currently used by the Dev UI to "poll", since IDX cannot support SSE
+     * at this time.
+     */
+    getCurrentRuntime: t.procedure.query(() => {
+      return manager.getMostRecentRuntime() ?? ({} as RuntimeInfo);
     }),
   });
 

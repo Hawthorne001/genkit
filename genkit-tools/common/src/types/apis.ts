@@ -15,8 +15,12 @@
  */
 
 import { z } from 'zod';
-import { EvalRunKeySchema } from './eval';
-import { FlowStateSchema } from './flow';
+import {
+  DatasetSchemaSchema,
+  DatasetTypeSchema,
+  EvalInferenceInputSchema,
+  EvalRunKeySchema,
+} from './eval';
 import {
   GenerationCommonConfigSchema,
   MessageSchema,
@@ -29,14 +33,7 @@ import { TraceDataSchema } from './trace';
  * It's used directly in the generation of the Reflection API OpenAPI spec.
  */
 
-export const EnvTypesSchema = z
-  .enum(['dev', 'prod'])
-  .describe('Supported environments in the runtime.');
-
-export type EnvTypes = z.infer<typeof EnvTypesSchema>;
-
 export const ListTracesRequestSchema = z.object({
-  env: EnvTypesSchema.optional(),
   limit: z.number().optional(),
   continuationToken: z.string().optional(),
 });
@@ -51,35 +48,10 @@ export const ListTracesResponseSchema = z.object({
 export type ListTracesResponse = z.infer<typeof ListTracesResponseSchema>;
 
 export const GetTraceRequestSchema = z.object({
-  env: EnvTypesSchema,
   traceId: z.string().describe('ID of the trace.'),
 });
 
 export type GetTraceRequest = z.infer<typeof GetTraceRequestSchema>;
-
-export const ListFlowStatesRequestSchema = z.object({
-  env: EnvTypesSchema.optional(),
-  limit: z.number().optional(),
-  continuationToken: z.string().optional(),
-});
-
-export type ListFlowStatesRequest = z.infer<typeof ListFlowStatesRequestSchema>;
-
-export const ListFlowStatesResponseSchema = z.object({
-  flowStates: z.array(FlowStateSchema),
-  continuationToken: z.string().optional(),
-});
-
-export type ListFlowStatesResponse = z.infer<
-  typeof ListFlowStatesResponseSchema
->;
-
-export const GetFlowStateRequestSchema = z.object({
-  env: EnvTypesSchema,
-  flowId: z.string().describe('ID of the flow state.'),
-});
-
-export type GetFlowStateRequest = z.infer<typeof GetFlowStateRequestSchema>;
 
 export const RunActionRequestSchema = z.object({
   key: z
@@ -89,6 +61,14 @@ export const RunActionRequestSchema = z.object({
     .any()
     .optional()
     .describe('An input with the type that this action expects.'),
+  context: z
+    .any()
+    .optional()
+    .describe('Additional runtime context data (ex. auth context data).'),
+  telemetryLabels: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe('Labels to be applied to telemetry data.'),
 });
 
 export type RunActionRequest = z.infer<typeof RunActionRequestSchema>;
@@ -113,7 +93,7 @@ export type PageView = z.infer<typeof PageViewSchema>;
 export const ListEvalKeysRequestSchema = z.object({
   filter: z
     .object({
-      actionId: z.string().optional(),
+      actionRef: z.string().optional(),
     })
     .optional(),
 });
@@ -127,8 +107,46 @@ export const ListEvalKeysResponseSchema = z.object({
 export type ListEvalKeysResponse = z.infer<typeof ListEvalKeysResponseSchema>;
 
 export const GetEvalRunRequestSchema = z.object({
-  // Eval run name in the form actions/{action}/evalRun/{evalRun}
-  // where `action` can be blank e.g. actions/-/evalRun/{evalRun}
+  // Eval run name in the form evalRuns/{evalRunId}
   name: z.string(),
 });
 export type GetEvalRunRequest = z.infer<typeof GetEvalRunRequestSchema>;
+
+export const CreateDatasetRequestSchema = z.object({
+  data: EvalInferenceInputSchema,
+  datasetId: z.string().optional(),
+  datasetType: DatasetTypeSchema,
+  schema: DatasetSchemaSchema.optional(),
+  targetAction: z.string().optional(),
+});
+
+export type CreateDatasetRequest = z.infer<typeof CreateDatasetRequestSchema>;
+
+export const UpdateDatasetRequestSchema = z.object({
+  datasetId: z.string(),
+  data: EvalInferenceInputSchema.optional(),
+  schema: DatasetSchemaSchema.optional(),
+  targetAction: z.string().optional(),
+});
+export type UpdateDatasetRequest = z.infer<typeof UpdateDatasetRequestSchema>;
+
+export const RunNewEvaluationRequestSchema = z.object({
+  dataSource: z.object({
+    datasetId: z.string().optional(),
+    data: EvalInferenceInputSchema.optional(),
+  }),
+  actionRef: z.string(),
+  evaluators: z.array(z.string()).optional(),
+  options: z
+    .object({
+      auth: z.string().optional(),
+      actionConfig: z
+        .any()
+        .describe('addition parameters required for inference')
+        .optional(),
+    })
+    .optional(),
+});
+export type RunNewEvaluationRequest = z.infer<
+  typeof RunNewEvaluationRequestSchema
+>;

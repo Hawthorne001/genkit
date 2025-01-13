@@ -21,12 +21,14 @@ All flows can define an `authPolicy` in their config. An auth policy is a functi
 If this field is set, it is executed before the flow is invoked:
 
 ```ts
-import { defineFlow, runFlow } from '@genkit-ai/flow';
+import { genkit, z } from 'genkit';
 
-export const selfSummaryFlow = defineFlow(
+const ai = genkit({ ... });
+
+export const selfSummaryFlow = ai.defineFlow(
   {
     name: 'selfSummaryFlow',
-    inputSchema: z.object({uid: z.string()}),
+    inputSchema: z.object({ uid: z.string() }),
     outputSchema: z.string(),
     authPolicy: (auth, input) => {
       if (!auth) {
@@ -35,9 +37,12 @@ export const selfSummaryFlow = defineFlow(
       if (input.uid !== auth.uid) {
         throw new Error('You may only summarize your own profile data.');
       }
-    }
+    },
   },
-  async (input) => { ... });
+  async (input) => {
+    // Flow logic here...
+  }
+);
 ```
 
 When executing this flow, you _must_ provide an auth object using `withLocalAuthContext` or else you'll
@@ -45,11 +50,10 @@ receive an error:
 
 ```ts
 // Error: Authorization required.
-await runFlow(selfSummaryFlow, { uid: 'abc-def' });
+await selfSummaryFlow({ uid: 'abc-def' });
 
 // Error: You may only summarize your own profile data.
-await runFlow(
-  selfSummaryFlow,
+await selfSummaryFlow(
   { uid: 'abc-def' },
   {
     withLocalAuthContext: { uid: 'hij-klm' },
@@ -57,8 +61,7 @@ await runFlow(
 );
 
 // Success
-await runFlow(
-  selfSummaryFlow,
+await selfSummaryFlow(
   { uid: 'abc-def' },
   {
     withLocalAuthContext: { uid: 'abc-def' },
@@ -73,29 +76,30 @@ You can also retrieve the auth context for the flow at any time within the flow
 by calling `getFlowAuth()`, including in functions invoked by the flow:
 
 ```ts
-import { getFlowAuth, defineFlow } from '@genkit-ai/flow';
+import { genkit, z } from 'genkit';
+
+const ai = genkit({ ... });;
 
 async function readDatabase(uid: string) {
-  if (getFlowAuth().admin) {
-    // Do something special if the user is an admin:
-    ...
+  const auth = ai.getAuthContext();
+  if (auth?.admin) {
+    // Do something special if the user is an admin
   } else {
     // Otherwise, use the `uid` variable to retrieve the relevant document
-    ...
   }
 }
 
-export const selfSummaryFlow = defineFlow(
+export const selfSummaryFlow = ai.defineFlow(
   {
     name: 'selfSummaryFlow',
-    inputSchema: z.object({uid: z.string()}),
+    inputSchema: z.object({ uid: z.string() }),
     outputSchema: z.string(),
     authPolicy: ...
   },
   async (input) => {
-    ...
     await readDatabase(input.uid);
-  });
+  }
+);
 ```
 
 When testing flows with Genkit dev tools, you are able to specify this auth
@@ -123,19 +127,28 @@ You can use Firebase Auth to protect your flows defined with `onFlow()`:
 <!-- prettier-ignore: see note above -->
 
 ```ts
-import {firebaseAuth} from "@genkit-ai/firebase/auth";
-import {onFlow} from "@genkit-ai/firebase/functions";
+import { genkit } from 'genkit';
+import { firebaseAuth } from '@genkit-ai/firebase';
+import { onFlow } from '@genkit-ai/firebase/functions';
 
-export const selfSummaryFlow = onFlow({
-    name: "selfSummaryFlow",
+const ai = genkit({ ... });;
+
+export const selfSummaryFlow = onFlow(
+  ai,
+  {
+    name: 'selfSummaryFlow',
     inputSchema: z.string(),
     outputSchema: z.string(),
     authPolicy: firebaseAuth((user) => {
       if (!user.email_verified && !user.admin) {
-        throw new Error("Email not verified");
+        throw new Error('Email not verified');
       }
     }),
-  }, (subject) => {...})
+  },
+  async (input) => {
+        // Flow logic here...
+  }
+);
 ```
 
 When using the Firebase Auth plugin, `user` will be returned as a
@@ -176,16 +189,22 @@ indicate to the library that you are forgoing authorization checks by using the
 <!-- prettier-ignore: see note above -->
 
 ```ts
-import {onFlow, noAuth} from "@genkit-ai/firebase/functions";
+import { onFlow, noAuth } from "@genkit-ai/firebase/functions";
 
-export const selfSummaryFlow = onFlow({
+export const selfSummaryFlow = onFlow(
+  ai,
+  {
     name: "selfSummaryFlow",
     inputSchema: z.string(),
     outputSchema: z.string(),
     // WARNING: Only do this if you have some other gatekeeping in place, like
     // Cloud IAM!
     authPolicy: noAuth(),
-  }, (subject) => {...})
+  },
+  async (input) => {
+        // Flow logic here...
+  }
+);
 ```
 
 ### Client integrity
@@ -199,9 +218,11 @@ the following configuration options to your `onFlow()`:
 <!-- prettier-ignore: see note above -->
 
 ```ts
-import {onFlow} from "@genkit-ai/firebase/functions";
+import { onFlow } from "@genkit-ai/firebase/functions";
 
-export const selfSummaryFlow = onFlow({
+export const selfSummaryFlow = onFlow(
+  ai,
+  {
     name: "selfSummaryFlow",
     inputSchema: z.string(),
     outputSchema: z.string(),
@@ -213,7 +234,11 @@ export const selfSummaryFlow = onFlow({
     consumeAppCheckToken: true,
 
     authPolicy: ...,
-  }, (subject) => {...})
+  },
+  async (input) => {
+        // Flow logic here...
+  }
+);
 ```
 
 ## Non-Firebase HTTP authorization
@@ -223,43 +248,53 @@ Firebase, you'll want to have a way to set up your own authorization checks
 alongside the native flows. You have two options:
 
 1.  Use whatever server framework you like, and pass the auth context through via
-    `runFlow()` as noted above.
+    the flow call as noted above.
 
-1.  Use the built-in `startFlowsServer()` and provide Express middleware in the
-    flow config:
+1.  Use  `startFlowsServer()` available via `@genkit-ai/express` plugin and provide
+    Express auth middleware in the flow server config:
 
     ```ts
-    export const selfSummaryFlow = defineFlow(
-    {
-      name: 'selfSummaryFlow',
-      inputSchema: z.object({uid: z.string()}),
-      outputSchema: z.string(),
-      middleware: [
-        (req, res, next) => {
-          const token = req.headers['authorization'];
-          const user = yourVerificationLibrary(token);
+    import { genkit, z } from 'genkit';
+    import { startFlowServer, withAuth } from '@genkit-ai/express';
 
-          // This is what will get passed to your authPolicy
-          req.auth = user;
-          next();
-        }
-      ],
-      authPolicy: (auth, input) => {
-        if (!auth) {
-          throw new Error('Authorization required.');
-        }
-        if (input.uid !== auth.uid) {
-          throw new Error('You may only summarize your own profile data.');
-        }
+    const ai = genkit({ ... });;
+
+    export const selfSummaryFlow = ai.defineFlow(
+      {
+        name: 'selfSummaryFlow',
+        inputSchema: z.object({ uid: z.string() }),
+        outputSchema: z.string(),
+      },
+      async (input) => {
+        // Flow logic here...
       }
-    },
-    async (input) => { ... });
+    );
 
-    startFlowsServer();  // This will register the middleware
+    const authProvider = (req, res, next) => {
+      const token = req.headers['authorization'];
+      const user = yourVerificationLibrary(token);
+
+      // Pass auth information to the flow
+      req.auth = user;
+      next();
+    };
+
+    startFlowServer({
+      flows: [
+        withAuth(selfSummaryFlow, authProvider, ({ auth, action, input, request }) => {
+          if (!auth) {
+            throw new Error('Authorization required.');
+          }
+          if (input.uid !== auth.uid) {
+            throw new Error('You may only summarize your own profile data.');
+          }
+        })
+      ],
+    });  // Registers the middleware
     ```
 
-    For more information about using Express, see the [Cloud Run](/genkit/express)
+    For more information about using Express, see the [Cloud Run](/genkit/cloud-run)
     instructions.
 
 Please note, if you go with (1), you the `middleware` configuration option will
-be ignored by `runFlow()`.
+be ignored by when the flow is invoked directly.

@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-import { defineTool } from '@genkit-ai/ai/tool';
-import { defineDotprompt } from '@genkit-ai/dotprompt';
-import { defineFlow } from '@genkit-ai/flow';
 import { gemini15Flash } from '@genkit-ai/googleai';
-import * as z from 'zod';
+import { z } from 'genkit';
 import { WeatherSchema } from '../common/types';
+import { ai } from '../genkit.js';
 
-const getWeather = defineTool(
+ai.defineTool(
   {
     name: 'getWeather',
     description: 'Get the weather for the given location.',
@@ -31,7 +29,7 @@ const getWeather = defineTool(
       conditions: z.string(),
     }),
   },
-  async (input) => {
+  async () => {
     const conditions = ['Sunny', 'Cloudy', 'Partially Cloudy', 'Raining'];
     const c = Math.floor(Math.random() * conditions.length);
     const temp = Math.floor(Math.random() * (120 - 32) + 32);
@@ -43,14 +41,14 @@ const getWeather = defineTool(
   }
 );
 
-const getTime = defineTool(
+ai.defineTool(
   {
     name: 'getTime',
     description: 'Get the current time',
     inputSchema: z.object({ timezone: z.string().optional() }),
     outputSchema: z.object({ time: z.number() }),
   },
-  async (input) => {
+  async () => {
     return { time: Date.now() };
   }
 );
@@ -60,11 +58,11 @@ const template = `
   Always try to be as efficient as possible, and request tool calls in batches.
 
   {{role "user"}}
-  Help me decide which is a better place to visit today based on the weather. 
-  I want to be outside as much as possible. Here are the cities I am 
+  Help me decide which is a better place to visit today based on the weather.
+  I want to be outside as much as possible. Here are the cities I am
   considering:\n\n{{#each cities}}{{this}}\n{{/each}}`;
 
-export const weatherPrompt = defineDotprompt(
+export const weatherPrompt = ai.definePrompt(
   {
     name: 'weatherPrompt',
     model: gemini15Flash,
@@ -83,22 +81,16 @@ export const weatherPrompt = defineDotprompt(
       topK: 16,
       topP: 0.95,
     },
-    tools: [getWeather],
+    tools: ['getWeather'],
   },
   template
 );
 
-defineFlow(
+ai.defineFlow(
   {
     name: 'flowWeather',
     inputSchema: WeatherSchema,
     outputSchema: z.string(),
   },
-  async (input) => {
-    const response = await weatherPrompt.generate({
-      input,
-    });
-
-    return response.text();
-  }
+  async (input) => (await weatherPrompt(input)).text
 );

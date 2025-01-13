@@ -14,43 +14,15 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
 import { firebaseAuth } from '@genkit-ai/firebase/auth';
 import { noAuth, onFlow } from '@genkit-ai/firebase/functions';
-import { defineFlow, run } from '@genkit-ai/flow';
 import { gemini15Flash } from '@genkit-ai/googleai';
 import { DecodedIdToken } from 'firebase-admin/auth';
-import * as z from 'zod';
-
-export const flowBasicAuth = defineFlow(
-  {
-    name: 'flowBasicAuth',
-    inputSchema: z.object({ language: z.string(), uid: z.string() }),
-    outputSchema: z.string(),
-    authPolicy: (auth, input) => {
-      if (!auth) {
-        throw new Error('Authorization required.');
-      }
-      if (input.uid !== auth.uid) {
-        throw new Error('You may only summarize your own profile data.');
-      }
-    },
-  },
-  async (input) => {
-    const prompt = `Say hello in language ${input.language}`;
-
-    return await run('call-llm', async () => {
-      const llmResponse = await generate({
-        model: gemini15Flash,
-        prompt: prompt,
-      });
-
-      return llmResponse.text();
-    });
-  }
-);
+import { z } from 'genkit';
+import { ai } from '../genkit.js';
 
 export const flowAuth = onFlow(
+  ai,
   {
     name: 'flowAuth',
     inputSchema: z.string(),
@@ -67,18 +39,19 @@ export const flowAuth = onFlow(
   async (language) => {
     const prompt = `Say hello in language ${language}`;
 
-    return await run('call-llm', async () => {
-      const llmResponse = await generate({
+    return await ai.run('call-llm', async () => {
+      const llmResponse = await ai.generate({
         model: gemini15Flash,
         prompt: prompt,
       });
 
-      return llmResponse.text();
+      return llmResponse.text;
     });
   }
 );
 
 export const flowAuthNone = onFlow(
+  ai,
   {
     name: 'flowAuthNone',
     inputSchema: z.string(),
@@ -91,13 +64,13 @@ export const flowAuthNone = onFlow(
   async (language) => {
     const prompt = `Say hello in language ${language}`;
 
-    return await run('call-llm', async () => {
-      const llmResponse = await generate({
+    return await ai.run('call-llm', async () => {
+      const llmResponse = await ai.generate({
         model: gemini15Flash,
         prompt: prompt,
       });
 
-      return llmResponse.text();
+      return llmResponse.text;
     });
   }
 );

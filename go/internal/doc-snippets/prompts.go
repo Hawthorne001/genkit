@@ -18,19 +18,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/invopop/jsonschema"
 )
 
 func pr01() {
-	model := ai.Model{}
+	g, err := genkit.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	model := genkit.LookupModel(g, "googleai", "gemini-1.5-flash")
 
 	// [START pr01]
-	request := ai.GenerateRequest{Messages: []*ai.Message{
-		{Content: []*ai.Part{ai.NewTextPart("You are a helpful AI assistant named Walt.")}},
-	}}
-	model.Generate(context.Background(), &request, nil)
+	genkit.Generate(context.Background(), g,
+		ai.WithModel(model),
+		ai.WithTextPrompt("You are a helpful AI assistant named Walt."))
 	// [END pr01]
 }
 
@@ -43,13 +49,17 @@ func helloPrompt(name string) *ai.Part {
 // [END hello]
 
 func pr02() {
-	model := ai.Model{}
+	g, err := genkit.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	model := genkit.LookupModel(g, "googleai", "gemini-1.5-flash")
 
 	// [START pr02]
-	request := ai.GenerateRequest{Messages: []*ai.Message{
-		{Content: []*ai.Part{helloPrompt("Fred")}},
-	}}
-	response, err := model.Generate(context.Background(), &request, nil)
+	response, err := genkit.GenerateText(context.Background(), g,
+		ai.WithModel(model),
+		ai.WithMessages(ai.NewUserMessage(helloPrompt("Fred"))))
 	// [END pr02]
 
 	if err == nil {
@@ -58,18 +68,24 @@ func pr02() {
 }
 
 func pr03() error {
-	model := ai.Model{}
+	g, err := genkit.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	model := genkit.LookupModel(g, "googleai", "gemini-1.5-flash")
 
 	// [START pr03_1]
 	type HelloPromptInput struct {
 		UserName string
 	}
-	helloPrompt := ai.DefinePrompt(
+	helloPrompt := genkit.DefinePrompt(
+		g,
 		"prompts",
 		"helloPrompt",
 		nil, // Additional model config
 		jsonschema.Reflect(&HelloPromptInput{}),
-		func(ctx context.Context, input any) (*ai.GenerateRequest, error) {
+		func(ctx context.Context, input any) (*ai.ModelRequest, error) {
 			params, ok := input.(HelloPromptInput)
 			if !ok {
 				return nil, errors.New("input doesn't satisfy schema")
@@ -77,7 +93,7 @@ func pr03() error {
 			prompt := fmt.Sprintf(
 				"You are a helpful AI assistant named Walt. Say hello to %s.",
 				params.UserName)
-			return &ai.GenerateRequest{Messages: []*ai.Message{
+			return &ai.ModelRequest{Messages: []*ai.Message{
 				{Content: []*ai.Part{ai.NewTextPart(prompt)}},
 			}}, nil
 		},
@@ -89,7 +105,7 @@ func pr03() error {
 	if err != nil {
 		return err
 	}
-	response, err := model.Generate(context.Background(), request, nil)
+	response, err := genkit.GenerateWithRequest(context.Background(), g, model, request, nil)
 	// [END pr03_2]
 
 	_ = response

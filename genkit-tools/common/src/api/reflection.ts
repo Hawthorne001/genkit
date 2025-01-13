@@ -24,7 +24,6 @@ import * as path from 'path';
 import * as z from 'zod';
 import * as action from '../types/action';
 import * as apis from '../types/apis';
-import { FlowStateSchema } from '../types/flow';
 import { SpanDataSchema, TraceDataSchema } from '../types/trace';
 
 const registry = new OpenAPIRegistry();
@@ -34,7 +33,6 @@ registry.register(
   action.JSONSchema7Schema.openapi('JSONSchema7')
 );
 registry.register('Action', action.ActionSchema.openapi('Action'));
-registry.register('FlowState', FlowStateSchema.openapi('FlowState'));
 registry.register('TraceData', TraceDataSchema.openapi('TraceData'));
 registry.register('SpanData', SpanDataSchema.openapi('SpanData'));
 registry.registerPath({
@@ -71,79 +69,6 @@ registry.registerPath({
       content: {
         'application/json': {
           schema: action.RunActionResponseSchema,
-        },
-      },
-    },
-  },
-});
-registry.registerPath({
-  method: 'get',
-  path: '/api/envs/{env}/traces',
-  summary: 'Retrieves all traces for a given environment (e.g. dev or prod).',
-  request: {
-    params: apis.ListTracesRequestSchema,
-  },
-  responses: {
-    '200': {
-      description: 'Success',
-      content: {
-        'application/json': {
-          schema: z.array(TraceDataSchema),
-        },
-      },
-    },
-  },
-});
-registry.registerPath({
-  method: 'get',
-  path: '/api/envs/{env}/traces/{traceId}',
-  summary: 'Retrieves traces for the given environment.',
-  request: {
-    params: apis.GetTraceRequestSchema,
-  },
-  responses: {
-    '200': {
-      description: 'Success',
-      content: {
-        'application/json': {
-          schema: TraceDataSchema,
-        },
-      },
-    },
-  },
-});
-registry.registerPath({
-  method: 'get',
-  path: '/api/envs/{env}/flowStates',
-  summary:
-    'Retrieves all flow states for a given environment (e.g. dev or prod).',
-  request: {
-    params: apis.ListFlowStatesRequestSchema,
-  },
-  responses: {
-    '200': {
-      description: 'Success',
-      content: {
-        'application/json': {
-          schema: z.array(FlowStateSchema),
-        },
-      },
-    },
-  },
-});
-registry.registerPath({
-  method: 'get',
-  path: '/api/envs/{env}/flowStates/{flowId}',
-  summary: 'Retrieves a flow state for the given ID.',
-  request: {
-    params: apis.GetFlowStateRequestSchema,
-  },
-  responses: {
-    '200': {
-      description: 'Success',
-      content: {
-        'application/json': {
-          schema: FlowStateSchema,
         },
       },
     },

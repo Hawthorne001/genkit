@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/internal/fakeembedder"
 )
 
@@ -35,6 +36,11 @@ func TestGenkit(t *testing.T) {
 	namespace := *testNamespace + "TestGenkit"
 
 	ctx := context.Background()
+
+	g, err := genkit.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Get information about the index.
 
@@ -77,13 +83,13 @@ func TestGenkit(t *testing.T) {
 	}
 	cfg := Config{
 		IndexID:  *testIndex,
-		Embedder: ai.DefineEmbedder("fake", "embedder3", embedder.Embed),
+		Embedder: genkit.DefineEmbedder(g, "fake", "embedder3", embedder.Embed),
 	}
-	indexer, err := DefineIndexer(ctx, cfg)
+	indexer, err := DefineIndexer(ctx, g, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	retriever, err := DefineRetriever(ctx, cfg)
+	retriever, err := DefineRetriever(ctx, g, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +98,8 @@ func TestGenkit(t *testing.T) {
 		Namespace: namespace,
 	}
 
-	indexerReq := &ai.IndexerRequest{
-		Documents: []*ai.Document{d1, d2, d3},
-		Options:   indexerOptions,
-	}
 	t.Logf("index flag = %q, indexData.Host = %q", *testIndex, indexData.Host)
-	err = indexer.Index(ctx, indexerReq)
+	err = ai.Index(ctx, indexer, ai.WithIndexerOpts(indexerOptions), ai.WithIndexerDocs(d1, d2, d3))
 	if err != nil {
 		t.Fatalf("Index operation failed: %v", err)
 	}
@@ -129,12 +131,9 @@ func TestGenkit(t *testing.T) {
 		Count:     2,
 		Namespace: namespace,
 	}
-
-	retrieverReq := &ai.RetrieverRequest{
-		Document: d1,
-		Options:  retrieverOptions,
-	}
-	retrieverResp, err := retriever.Retrieve(ctx, retrieverReq)
+	retrieverResp, err := ai.Retrieve(ctx, retriever,
+		ai.WithRetrieverDoc(d1),
+		ai.WithRetrieverOpts(retrieverOptions))
 	if err != nil {
 		t.Fatalf("Retrieve operation failed: %v", err)
 	}

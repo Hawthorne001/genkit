@@ -14,39 +14,76 @@
  * limitations under the License.
  */
 
+import { JSONSchema7 } from 'json-schema';
 import { z } from 'zod';
-import { ListEvalKeysRequest, ListEvalKeysResponse } from './apis';
+import zodToJsonSchema from 'zod-to-json-schema';
+import {
+  CreateDatasetRequest,
+  ListEvalKeysRequest,
+  ListEvalKeysResponse,
+  UpdateDatasetRequest,
+} from './apis';
+import { GenerateRequestSchema } from './model';
 
 /**
  * This file defines schema and types that are used by the Eval store.
  */
 
 /**
- * Structured input for eval:flow
+ * Supported datatype for model datasets
  */
-export const EvalFlowStructuredInputSchema = z.object({
-  samples: z.array(
-    z.object({
-      input: z.any(),
-      reference: z.any().optional(),
-    })
-  ),
-});
-export type EvalFlowStructuredInput = z.infer<
-  typeof EvalFlowStructuredInputSchema
->;
+export const ModelInferenceInputSchema = z.union([
+  z.string(),
+  GenerateRequestSchema,
+]);
+export type ModelInferenceInput = z.infer<typeof ModelInferenceInputSchema>;
+export const ModelInferenceInputJSONSchema = zodToJsonSchema(
+  ModelInferenceInputSchema,
+  {
+    $refStrategy: 'none',
+    removeAdditionalStrategy: 'strict',
+  }
+) as JSONSchema7;
 
 /**
- * A dataset that is ready for eval:flow.
- *
- * This could be an array of input objects to the target flow, or
- * It could be a JSON object as specified, with support for references.
+ * GenerateRequest JSON schema to support eval-inference using models
  */
-export const EvalFlowInputSchema = z.union([
-  z.array(z.any()),
-  EvalFlowStructuredInputSchema,
-]);
-export type EvalFlowInput = z.infer<typeof EvalFlowInputSchema>;
+export const GenerateRequestJSONSchema = zodToJsonSchema(
+  GenerateRequestSchema,
+  {
+    $refStrategy: 'none',
+    removeAdditionalStrategy: 'strict',
+  }
+) as JSONSchema7;
+
+/**
+ * A single sample to be used for inference.
+ **/
+export const EvalInferenceSampleSchema = z.object({
+  testCaseId: z.string().optional(),
+  input: z.any(),
+  reference: z.any().optional(),
+});
+
+/**
+ * A set of samples that is ready for inference.
+ *
+ * This should be used in user-facing surfaces (CLI/API inputs) to accommodate various user input formats. For internal wire-transfer/storage, prefer {@link Dataset}.
+ */
+export const EvalInferenceInputSchema = z.array(EvalInferenceSampleSchema);
+export type EvalInferenceInput = z.infer<typeof EvalInferenceInputSchema>;
+
+/**
+ * Represents a Dataset, to be used for bulk-inference / evaluation. This is a more optionated form of EvalInferenceInput, which guarantees testCaseId for each test sample.
+ */
+export const DatasetSchema = z.array(
+  z.object({
+    testCaseId: z.string(),
+    input: z.any(),
+    reference: z.any().optional(),
+  })
+);
+export type Dataset = z.infer<typeof DatasetSchema>;
 
 /**
  * A record that is ready for evaluation.
@@ -58,14 +95,18 @@ export const EvalInputSchema = z.object({
   input: z.any(),
   output: z.any(),
   error: z.string().optional(),
-  context: z.array(z.string()).optional(),
+  context: z.array(z.any()).optional(),
   reference: z.any().optional(),
   traceIds: z.array(z.string()),
 });
 export type EvalInput = z.infer<typeof EvalInputSchema>;
 
+export const EvalInputDatasetSchema = z.array(EvalInputSchema);
+export type EvalInputDataset = z.infer<typeof EvalInputDatasetSchema>;
+
 export const EvalMetricSchema = z.object({
   evaluator: z.string(),
+  scoreId: z.string().optional(),
   score: z.union([z.number(), z.string(), z.boolean()]).optional(),
   rationale: z.string().optional(),
   error: z.string().optional(),
@@ -88,11 +129,21 @@ export type EvalResult = z.infer<typeof EvalResultSchema>;
  * A unique identifier for an Evaluation Run.
  */
 export const EvalRunKeySchema = z.object({
-  actionId: z.string().optional(),
+  actionRef: z.string().optional(),
+  datasetId: z.string().optional(),
+  datasetVersion: z.number().optional(),
   evalRunId: z.string(),
   createdAt: z.string(),
+  actionConfig: z.any().optional(),
 });
 export type EvalRunKey = z.infer<typeof EvalRunKeySchema>;
+export const EvalKeyAugmentsSchema = EvalRunKeySchema.pick({
+  datasetId: true,
+  datasetVersion: true,
+  actionRef: true,
+  actionConfig: true,
+});
+export type EvalKeyAugments = z.infer<typeof EvalKeyAugmentsSchema>;
 
 /**
  * A container for the results of evaluation over a batch of test cases.
@@ -113,7 +164,7 @@ export const EvalRunSchema = z.object({
 export type EvalRun = z.infer<typeof EvalRunSchema>;
 
 /**
- * Eval dataset store persistence interface.
+ * Eval store persistence interface.
  */
 export interface EvalStore {
   /**
@@ -125,13 +176,82 @@ export interface EvalStore {
   /**
    * Load a single EvalRun from storage
    * @param evalRunId the ID of the EvalRun
-   * @param actionId (optional) the ID of the action used to generate output.
    */
-  load(evalRunId: string, actionId?: string): Promise<EvalRun | undefined>;
+  load(evalRunId: string): Promise<EvalRun | undefined>;
 
   /**
    * List the keys of all EvalRuns from storage
    * @param query (optional) filter criteria for the result list
    */
   list(query?: ListEvalKeysRequest): Promise<ListEvalKeysResponse>;
+}
+
+export const DatasetSchemaSchema = z.object({
+  inputSchema: z
+    .record(z.any())
+    .describe('Valid JSON Schema for the `input` field of dataset entry.')
+    .optional(),
+  referenceSchema: z
+    .record(z.any())
+    .describe('Valid JSON Schema for the `reference` field of dataset entry.')
+    .optional(),
+});
+
+/** Type of dataset, useful for UI niceties. */
+export const DatasetTypeSchema = z.enum(['UNKNOWN', 'FLOW', 'MODEL']);
+export type DatasetType = z.infer<typeof DatasetTypeSchema>;
+
+/**
+ * Metadata for Dataset objects containing version, create and update time, etc.
+ */
+export const DatasetMetadataSchema = z.object({
+  /** unique. user-provided or auto-generated */
+  datasetId: z.string(),
+  size: z.number(),
+  schema: DatasetSchemaSchema.optional(),
+  datasetType: DatasetTypeSchema,
+  targetAction: z.string().optional(),
+  /** 1 for v1, 2 for v2, etc */
+  version: z.number(),
+  createTime: z.string(),
+  updateTime: z.string(),
+});
+export type DatasetMetadata = z.infer<typeof DatasetMetadataSchema>;
+
+/**
+ * Eval dataset store persistence interface.
+ */
+export interface DatasetStore {
+  /**
+   * Create new dataset with the given data
+   * @param req create requeest with the data
+   * @returns dataset metadata
+   */
+  createDataset(req: CreateDatasetRequest): Promise<DatasetMetadata>;
+
+  /**
+   * Update dataset
+   * @param req update requeest with new data
+   * @returns updated dataset metadata
+   */
+  updateDataset(req: UpdateDatasetRequest): Promise<DatasetMetadata>;
+
+  /**
+   * Get existing dataset
+   * @param datasetId the ID of the dataset
+   * @returns dataset ready for inference
+   */
+  getDataset(datasetId: string): Promise<Dataset>;
+
+  /**
+   * List all existing datasets
+   * @returns array of dataset metadata objects
+   */
+  listDatasets(): Promise<DatasetMetadata[]>;
+
+  /**
+   * Delete existing dataset
+   * @param datasetId the ID of the dataset
+   */
+  deleteDataset(datasetId: string): Promise<void>;
 }

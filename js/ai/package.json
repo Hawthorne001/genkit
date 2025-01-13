@@ -7,15 +7,15 @@
     "genai",
     "generative-ai"
   ],
-  "version": "0.5.8",
+  "version": "1.0.0-rc.2",
   "type": "commonjs",
   "scripts": {
     "check": "tsc",
     "compile": "tsup-node",
-    "build:clean": "rm -rf ./lib",
+    "build:clean": "rimraf ./lib",
     "build": "npm-run-all build:clean check compile",
     "build:watch": "tsup-node --watch",
-    "test": "node --import tsx --test ./tests/**/*_test.ts",
+    "test": "node --import tsx --test ./tests/**/*_test.ts ./tests/*_test.ts",
     "test:single": "node --import tsx --test"
   },
   "repository": {
@@ -27,17 +27,19 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@genkit-ai/core": "workspace:*",
-    "@opentelemetry/api": "^1.7.0",
+    "@opentelemetry/api": "^1.9.0",
     "@types/node": "^20.11.19",
+    "colorette": "^2.0.20",
     "json5": "^2.2.3",
     "node-fetch": "^3.3.2",
     "partial-json": "^0.1.7",
-    "zod": "^3.22.4"
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "npm-run-all": "^4.1.5",
-    "tsup": "^8.0.2",
-    "tsx": "^4.7.1",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
     "typescript": "^4.9.0"
   },
   "types": "lib/index.d.ts",
@@ -89,6 +91,36 @@
       "require": "./lib/tool.js",
       "import": "./lib/tool.mjs",
       "default": "./lib/tool.js"
+    },
+    "./testing": {
+      "types": "./lib/testing/index.d.ts",
+      "require": "./lib/testing/index.js",
+      "import": "./lib/testing/index.mjs",
+      "default": "./lib/testing/index.js"
+    },
+    "./reranker": {
+      "types": "./lib/reranker.d.ts",
+      "require": "./lib/reranker.js",
+      "import": "./lib/reranker.mjs",
+      "default": "./lib/reranker.js"
+    },
+    "./chat": {
+      "types": "./lib/chat.d.ts",
+      "require": "./lib/chat.js",
+      "import": "./lib/chat.mjs",
+      "default": "./lib/chat.js"
+    },
+    "./session": {
+      "types": "./lib/session.d.ts",
+      "require": "./lib/session.js",
+      "import": "./lib/session.mjs",
+      "default": "./lib/session.js"
+    },
+    "./formats": {
+      "types": "./lib/formats/index.d.ts",
+      "require": "./lib/formats/index.js",
+      "import": "./lib/formats/index.mjs",
+      "default": "./lib/formats/index.js"
     }
   },
   "typesVersions": {
@@ -113,6 +145,15 @@
       ],
       "tool": [
         "lib/tool"
+      ],
+      "reranker": [
+        "lib/reranker"
+      ],
+      "chat": [
+        "lib/chat"
+      ],
+      "session": [
+        "lib/session"
       ]
     }
   }

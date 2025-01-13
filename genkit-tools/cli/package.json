@@ -1,7 +1,7 @@
 {
-  "name": "genkit",
-  "version": "0.5.8",
-  "description": "CLI for interacting with the Google GenKit AI framework",
+  "name": "genkit-cli",
+  "version": "1.0.0-rc.2",
+  "description": "CLI for interacting with the Google Genkit AI framework",
   "license": "Apache-2.0",
   "keywords": [
     "genkit",
@@ -27,10 +27,14 @@
   },
   "dependencies": {
     "@genkit-ai/tools-common": "workspace:*",
+    "@genkit-ai/telemetry-server": "workspace:*",
+    "axios": "^1.7.7",
     "colorette": "^2.0.20",
     "commander": "^11.1.0",
     "extract-zip": "^2.0.1",
+    "open": "^6.3.0",
     "inquirer": "^8.2.0",
+    "get-port": "5.1.1",
     "ora": "^5.4.1"
   },
   "devDependencies": {

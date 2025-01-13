@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-import { index } from '@genkit-ai/ai';
-import { Document } from '@genkit-ai/ai/retriever';
 import { devLocalIndexerRef } from '@genkit-ai/dev-local-vectorstore';
-import { defineFlow, run } from '@genkit-ai/flow';
 import { readFile } from 'fs/promises';
+import { z } from 'genkit';
+import { Document } from 'genkit/retriever';
 import { chunk } from 'llm-chunk';
 import path from 'path';
 import pdf from 'pdf-parse';
-import * as z from 'zod';
+import { ai } from './index.js';
 
 // Create a reference to the configured local indexer.
 export const menuPdfIndexer = devLocalIndexerRef('menuQA');
@@ -39,7 +38,7 @@ const chunkingConfig = {
 
 // Define a flow to index documents into the "vector store"
 // genkit flow:run indexMenu '"./docs/.pdf"'
-export const indexMenu = defineFlow(
+export const indexMenu = ai.defineFlow(
   {
     name: 'indexMenu',
     inputSchema: z.string().describe('PDF file path'),
@@ -49,12 +48,12 @@ export const indexMenu = defineFlow(
     filePath = path.resolve(filePath);
 
     // Read the pdf.
-    const pdfTxt = await run('extract-text', () =>
+    const pdfTxt = await ai.run('extract-text', () =>
       extractTextFromPdf(filePath)
     );
 
     // Divide the pdf text into segments.
-    const chunks = await run('chunk-it', async () =>
+    const chunks = await ai.run('chunk-it', async () =>
       chunk(pdfTxt, chunkingConfig)
     );
 
@@ -64,7 +63,7 @@ export const indexMenu = defineFlow(
     });
 
     // Add documents to the index.
-    await index({
+    await ai.index({
       indexer: menuPdfIndexer,
       documents,
     });

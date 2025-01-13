@@ -13,12 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { generate } from '@genkit-ai/ai';
-import { BaseDataPoint, Score } from '@genkit-ai/ai/evaluator';
-import { ModelArgument } from '@genkit-ai/ai/model';
 import { loadPromptFile } from '@genkit-ai/dotprompt';
+import { Genkit, ModelArgument, z } from 'genkit';
+import { BaseEvalDataPoint, Score } from 'genkit/evaluator';
 import path from 'path';
-import * as z from 'zod';
 import { getDirName } from './helper.js';
 
 const MaliciousnessResponseSchema = z.object({
@@ -29,34 +27,47 @@ const MaliciousnessResponseSchema = z.object({
 export async function maliciousnessScore<
   CustomModelOptions extends z.ZodTypeAny,
 >(
+  ai: Genkit,
   judgeLlm: ModelArgument<CustomModelOptions>,
-  dataPoint: BaseDataPoint,
+  dataPoint: BaseEvalDataPoint,
   judgeConfig?: CustomModelOptions
 ): Promise<Score> {
-  const d = dataPoint;
   try {
-    if (!d.input || !d.output) {
-      throw new Error('input and output are required');
+    if (!dataPoint.input) {
+      throw new Error('Input was not provided');
+    }
+    if (!dataPoint.output) {
+      throw new Error('Output was not provided');
     }
 
+    const input =
+      typeof dataPoint.input === 'string'
+        ? dataPoint.input
+        : JSON.stringify(dataPoint.input);
+    const output =
+      typeof dataPoint.output === 'string'
+        ? dataPoint.output
+        : JSON.stringify(dataPoint.output);
+
     const prompt = await loadPromptFile(
+      ai.registry,
       path.resolve(getDirName(), '../../prompts/maliciousness.prompt')
     );
     //TODO: safetySettings are gemini specific - pull these out so they are tied to the LLM
-    const response = await generate({
+    const response = await ai.generate({
       model: judgeLlm,
       config: judgeConfig,
       prompt: prompt.renderText({
-        input: d.input as string,
-        submission: d.output as string,
+        input: input,
+        submission: output,
       }),
       output: {
         schema: MaliciousnessResponseSchema,
       },
     });
-    const parsedResponse = response.output();
+    const parsedResponse = response.output;
     if (!parsedResponse) {
-      throw new Error(`Unable to parse evaluator response: ${response.text()}`);
+      throw new Error(`Unable to parse evaluator response: ${response.text}`);
     }
     return {
       score: 1.0 * (parsedResponse.verdict ? 1 : 0),
@@ -64,9 +75,7 @@ export async function maliciousnessScore<
     };
   } catch (err) {
     console.debug(
-      `Genkit answer relevancy evaluation failed with error ${err} for sample ${JSON.stringify(
-        d
-      )}`
+      `Genkit answer relevancy evaluation failed with error ${err} for sample ${JSON.stringify(dataPoint)}`
     );
     throw err;
   }

@@ -14,57 +14,50 @@
  * limitations under the License.
  */
 
+import { Genkit } from 'genkit';
+import { logger } from 'genkit/logging';
 import {
-  CandidateData,
-  defineModel,
   GenerateRequest,
   GenerateResponseData,
   GenerationCommonConfigSchema,
   getBasicUsageStats,
   MessageData,
-} from '@genkit-ai/ai/model';
-import { genkitPlugin, Plugin } from '@genkit-ai/core';
-import { logger } from '@genkit-ai/core/logging';
+} from 'genkit/model';
+import { GenkitPlugin, genkitPlugin } from 'genkit/plugin';
+import { defineOllamaEmbedder } from './embeddings.js';
+import {
+  ApiType,
+  ModelDefinition,
+  RequestHeaders,
+  type OllamaPluginParams,
+} from './types.js';
 
-type ApiType = 'chat' | 'generate';
+export { type OllamaPluginParams };
 
-type RequestHeaders =
-  | Record<string, string>
-  | ((
-      params: { serverAddress: string; model: ModelDefinition },
-      request: GenerateRequest
-    ) => Promise<Record<string, string> | void>);
-
-type ModelDefinition = { name: string; type?: ApiType };
-
-export interface OllamaPluginParams {
-  models: ModelDefinition[];
-  /**
-   *  ollama server address.
-   */
-  serverAddress: string;
-
-  requestHeaders?: RequestHeaders;
+export function ollama(params: OllamaPluginParams): GenkitPlugin {
+  return genkitPlugin('ollama', async (ai: Genkit) => {
+    const serverAddress = params.serverAddress;
+    params.models?.map((model) =>
+      ollamaModel(ai, model, serverAddress, params.requestHeaders)
+    );
+    params.embedders?.map((model) =>
+      defineOllamaEmbedder(ai, {
+        name: model.name,
+        modelName: model.name,
+        dimensions: model.dimensions,
+        options: params,
+      })
+    );
+  });
 }
 
-export const ollama: Plugin<[OllamaPluginParams]> = genkitPlugin(
-  'ollama',
-  async (params: OllamaPluginParams) => {
-    const serverAddress = params?.serverAddress;
-    return {
-      models: params.models.map((model) =>
-        ollamaModel(model, serverAddress, params.requestHeaders)
-      ),
-    };
-  }
-);
-
 function ollamaModel(
+  ai: Genkit,
   model: ModelDefinition,
   serverAddress: string,
   requestHeaders?: RequestHeaders
 ) {
-  return defineModel(
+  return ai.defineModel(
     {
       name: `ollama/${model.name}`,
       label: `Ollama - ${model.name}`,
@@ -76,20 +69,20 @@ function ollamaModel(
     },
     async (input, streamingCallback) => {
       const options: Record<string, any> = {};
-      if (input.config?.hasOwnProperty('temperature')) {
-        options.temperature = input.config?.temperature;
+      if (input.config?.temperature !== undefined) {
+        options.temperature = input.config.temperature;
       }
-      if (input.config?.hasOwnProperty('topP')) {
-        options.top_p = input.config?.topP;
+      if (input.config?.topP !== undefined) {
+        options.top_p = input.config.topP;
       }
-      if (input.config?.hasOwnProperty('topK')) {
-        options.top_k = input.config?.topK;
+      if (input.config?.topK !== undefined) {
+        options.top_k = input.config.topK;
       }
-      if (input.config?.hasOwnProperty('stopSequences')) {
-        options.stop = input.config?.stopSequences?.join('');
+      if (input.config?.stopSequences !== undefined) {
+        options.stop = input.config.stopSequences.join('');
       }
-      if (input.config?.hasOwnProperty('maxOutputTokens')) {
-        options.num_predict = input.config?.maxOutputTokens;
+      if (input.config?.maxOutputTokens !== undefined) {
+        options.num_predict = input.config.maxOutputTokens;
       }
       const type = model.type ?? 'chat';
       const request = toOllamaRequest(
@@ -128,13 +121,12 @@ function ollamaModel(
         );
       } catch (e) {
         const cause = (e as any).cause;
-        if (cause) {
-          if (
-            cause instanceof Error &&
-            cause.message?.includes('ECONNREFUSED')
-          ) {
-            cause.message += '. Make sure ollama server is running.';
-          }
+        if (
+          cause &&
+          cause instanceof Error &&
+          cause.message?.includes('ECONNREFUSED')
+        ) {
+          cause.message += '. Make sure the Ollama server is running.';
           throw cause;
         }
         throw e;
@@ -143,7 +135,7 @@ function ollamaModel(
         throw new Error('Response has no body');
       }
 
-      const responseCandidates: CandidateData[] = [];
+      let message: MessageData;
 
       if (streamingCallback) {
         const reader = res.body.getReader();
@@ -159,33 +151,26 @@ function ollamaModel(
           });
           textResponse += message.content[0].text;
         }
-        responseCandidates.push({
-          index: 0,
-          finishReason: 'stop',
-          message: {
-            role: 'model',
-            content: [
-              {
-                text: textResponse,
-              },
-            ],
-          },
-        } as CandidateData);
+        message = {
+          role: 'model',
+          content: [
+            {
+              text: textResponse,
+            },
+          ],
+        };
       } else {
         const txtBody = await res.text();
         const json = JSON.parse(txtBody);
         logger.debug(txtBody, 'ollama raw response');
 
-        responseCandidates.push({
-          index: 0,
-          finishReason: 'stop',
-          message: parseMessage(json, type),
-        } as CandidateData);
+        message = parseMessage(json, type);
       }
 
       return {
-        candidates: responseCandidates,
-        usage: getBasicUsageStats(input.messages, responseCandidates),
+        message,
+        usage: getBasicUsageStats(input.messages, message),
+        finishReason: 'stop',
       } as GenerateResponseData;
     }
   );
@@ -223,11 +208,11 @@ function toOllamaRequest(
   type: ApiType,
   stream: boolean
 ) {
-  const request = {
+  const request: any = {
     model: name,
     options,
     stream,
-  } as any;
+  };
   if (type === 'chat') {
     const messages: Message[] = [];
     input.messages.forEach((m) => {

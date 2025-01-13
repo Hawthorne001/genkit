@@ -14,311 +14,23 @@
  * limitations under the License.
  */
 
+import { PluginProvider, z } from '@genkit-ai/core';
+import { Registry } from '@genkit-ai/core/registry';
 import assert from 'node:assert';
-import { describe, it } from 'node:test';
-import { z } from 'zod';
-import { GenerateResponseChunk } from '../../src/generate';
+import { beforeEach, describe, it } from 'node:test';
 import {
-  Candidate,
   GenerateOptions,
-  GenerateResponse,
-  Message,
+  generate,
   toGenerateRequest,
 } from '../../src/generate.js';
-import { GenerateResponseChunkData } from '../../src/model';
-import {
-  CandidateData,
-  GenerateRequest,
-  MessageData,
-} from '../../src/model.js';
+import { ModelAction, ModelMiddleware, defineModel } from '../../src/model.js';
 import { defineTool } from '../../src/tool.js';
 
-describe('Candidate', () => {
-  describe('#toJSON()', () => {
-    const testCases = [
-      {
-        should: 'serialize correctly when custom is undefined',
-        candidateData: {
-          message: new Message({
-            role: 'model',
-            content: [{ text: '{"name": "Bob"}' }],
-          }),
-          index: 0,
-          usage: {},
-          finishReason: 'stop',
-          finishMessage: '',
-          // No 'custom' property
-        },
-        expectedOutput: {
-          message: { content: [{ text: '{"name": "Bob"}' }], role: 'model' }, // NOTE THIS IS WRONG??
-          index: 0,
-          usage: {},
-          finishReason: 'stop',
-          finishMessage: '',
-          custom: undefined, // Or omit this if appropriate
-        },
-      },
-    ];
-
-    for (const test of testCases) {
-      it(test.should, () => {
-        const candidate = new Candidate(test.candidateData as Candidate);
-        assert.deepStrictEqual(candidate.toJSON(), test.expectedOutput);
-      });
-    }
-  });
-
-  describe('#output()', () => {
-    const testCases = [
-      {
-        should: 'return structured data from the data part',
-        candidateData: {
-          message: new Message({
-            role: 'model',
-            content: [{ data: { name: 'Alice', age: 30 } }],
-          }),
-          index: 0,
-          usage: {},
-          finishReason: 'stop',
-          finishMessage: '',
-          custom: {},
-        },
-        expectedOutput: { name: 'Alice', age: 30 },
-      },
-      {
-        should: 'parse JSON from text when the data part is absent',
-        candidateData: {
-          message: new Message({
-            role: 'model',
-            content: [{ text: '{"name": "Bob"}' }],
-          }),
-          index: 0,
-          usage: {},
-          finishReason: 'stop',
-          finishMessage: '',
-          custom: {},
-        },
-        expectedOutput: { name: 'Bob' },
-      },
-    ];
-
-    for (const test of testCases) {
-      it(test.should, () => {
-        const candidate = new Candidate(test.candidateData as CandidateData);
-        assert.deepStrictEqual(candidate.output(), test.expectedOutput);
-      });
-    }
-  });
-
-  describe('#hasValidOutput()', () => {
-    const good: MessageData = {
-      role: 'model',
-      content: [{ text: '{"abc": 123}' }],
-    };
-    const bad: MessageData = {
-      role: 'model',
-      content: [{ text: '{"abc": "123"}' }],
-    };
-    const goodData: MessageData = {
-      role: 'model',
-      content: [{ data: { abc: 123 } }],
-    };
-    const badData: MessageData = {
-      role: 'model',
-      content: [{ data: { abc: '123' } }],
-    };
-    const schemaRequest = {
-      output: {
-        schema: { type: 'object', properties: { abc: { type: 'number' } } },
-      },
-    } as unknown as GenerateRequest;
-
-    it('returns true if no schema', () => {
-      assert(
-        new Candidate<any>({
-          index: 0,
-          message: bad,
-          finishReason: 'stop',
-        }).hasValidOutput()
-      );
-    });
-
-    it('returns correctly based on validation from data', () => {
-      assert(
-        !new Candidate<any>({
-          index: 0,
-          message: badData,
-          finishReason: 'stop',
-        }).hasValidOutput(schemaRequest)
-      );
-      assert(
-        !new Candidate<any>(
-          { index: 0, message: badData, finishReason: 'stop' },
-          schemaRequest
-        ).hasValidOutput()
-      );
-      assert(
-        new Candidate<any>({
-          index: 0,
-          message: goodData,
-          finishReason: 'stop',
-        }).hasValidOutput(schemaRequest)
-      );
-      assert(
-        new Candidate<any>(
-          { index: 0, message: goodData, finishReason: 'stop' },
-          schemaRequest
-        ).hasValidOutput()
-      );
-    });
-
-    it('returns correctly based on validation from output', () => {
-      assert(
-        !new Candidate<any>({
-          index: 0,
-          message: bad,
-          finishReason: 'stop',
-        }).hasValidOutput(schemaRequest)
-      );
-      assert(
-        !new Candidate<any>(
-          { index: 0, message: bad, finishReason: 'stop' },
-          schemaRequest
-        ).hasValidOutput()
-      );
-      assert(
-        new Candidate<any>({
-          index: 0,
-          message: good,
-          finishReason: 'stop',
-        }).hasValidOutput(schemaRequest)
-      );
-      assert(
-        new Candidate<any>(
-          { index: 0, message: good, finishReason: 'stop' },
-          schemaRequest
-        ).hasValidOutput()
-      );
-    });
-  });
-});
-
-describe('GenerateResponse', () => {
-  describe('#output()', () => {
-    it('picks the first candidate with valid output if no index provided', () => {
-      const schemaRequest = {
-        output: {
-          schema: { type: 'object', properties: { abc: { type: 'number' } } },
-        },
-      } as unknown as GenerateRequest;
-      const response = new GenerateResponse(
-        {
-          candidates: [
-            {
-              index: 0,
-              finishReason: 'stop',
-              message: { role: 'model', content: [{ text: '{"abc":"123"}' }] },
-            },
-            {
-              index: 0,
-              finishReason: 'stop',
-              message: { role: 'model', content: [{ text: '{"abc":123}' }] },
-            },
-          ],
-        },
-        schemaRequest
-      );
-      assert.deepStrictEqual(response.output(), { abc: 123 });
-      assert.deepStrictEqual(response.output(0), { abc: '123' });
-    });
-  });
-  describe('#toolRequests()', () => {
-    it('returns empty array if no tools requests found', () => {
-      const response = new GenerateResponse({
-        candidates: [
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: { role: 'model', content: [{ text: '{"abc":"123"}' }] },
-          },
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: { role: 'model', content: [{ text: '{"abc":123}' }] },
-          },
-        ],
-      });
-      assert.deepStrictEqual(response.toolRequests(), []);
-      assert.deepStrictEqual(response.toolRequests(0), []);
-    });
-    it('picks the first candidate if no index provided', () => {
-      const toolCall = {
-        toolRequest: {
-          name: 'foo',
-          ref: 'abc',
-          input: 'banana',
-        },
-      };
-      const response = new GenerateResponse({
-        candidates: [
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: {
-              role: 'model',
-              content: [toolCall],
-            },
-          },
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: { role: 'model', content: [{ text: '{"abc":123}' }] },
-          },
-        ],
-      });
-      assert.deepStrictEqual(response.toolRequests(), [toolCall]);
-      assert.deepStrictEqual(response.toolRequests(0), [toolCall]);
-    });
-    it('returns all tool call', () => {
-      const toolCall1 = {
-        toolRequest: {
-          name: 'foo',
-          ref: 'abc',
-          input: 'banana',
-        },
-      };
-      const toolCall2 = {
-        toolRequest: {
-          name: 'bar',
-          ref: 'bcd',
-          input: 'apple',
-        },
-      };
-      const response = new GenerateResponse({
-        candidates: [
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: {
-              role: 'model',
-              content: [toolCall1, toolCall2],
-            },
-          },
-          {
-            index: 0,
-            finishReason: 'stop',
-            message: { role: 'model', content: [{ text: '{"abc":123}' }] },
-          },
-        ],
-      });
-      assert.deepStrictEqual(response.toolRequests(), [toolCall1, toolCall2]);
-    });
-  });
-});
-
 describe('toGenerateRequest', () => {
+  const registry = new Registry();
   // register tools
   const tellAFunnyJoke = defineTool(
+    registry,
     {
       name: 'tellAFunnyJoke',
       description:
@@ -329,6 +41,23 @@ describe('toGenerateRequest', () => {
     async (input) => {
       return `Why did the ${input.topic} cross the road?`;
     }
+  );
+
+  const namespacedPlugin: PluginProvider = {
+    name: 'namespaced',
+    initializer: async () => {},
+  };
+  registry.registerPluginProvider('namespaced', namespacedPlugin);
+
+  defineTool(
+    registry,
+    {
+      name: 'namespaced/add',
+      description: 'add two numbers together',
+      inputSchema: z.object({ a: z.number(), b: z.number() }),
+      outputSchema: z.number(),
+    },
+    async ({ a, b }) => a + b
   );
 
   const testCases = [
@@ -342,11 +71,10 @@ describe('toGenerateRequest', () => {
         messages: [
           { role: 'user', content: [{ text: 'Tell a joke about dogs.' }] },
         ],
-        candidates: undefined,
         config: undefined,
-        context: undefined,
+        docs: undefined,
         tools: [],
-        output: { format: 'text' },
+        output: {},
       },
     },
     {
@@ -361,9 +89,8 @@ describe('toGenerateRequest', () => {
         messages: [
           { role: 'user', content: [{ text: 'Tell a joke about dogs.' }] },
         ],
-        candidates: undefined,
         config: undefined,
-        context: undefined,
+        docs: undefined,
         tools: [
           {
             name: 'tellAFunnyJoke',
@@ -382,7 +109,39 @@ describe('toGenerateRequest', () => {
             },
           },
         ],
-        output: { format: 'text' },
+        output: {},
+      },
+    },
+    {
+      should: 'strip namespaces from tools when passing to the model',
+      prompt: {
+        model: 'vertexai/gemini-1.0-pro',
+        tools: ['namespaced/add'],
+        prompt: 'Add 10 and 5.',
+      },
+      expectedOutput: {
+        messages: [{ role: 'user', content: [{ text: 'Add 10 and 5.' }] }],
+        config: undefined,
+        docs: undefined,
+        tools: [
+          {
+            description: 'add two numbers together',
+            inputSchema: {
+              $schema: 'http://json-schema.org/draft-07/schema#',
+              additionalProperties: true,
+              properties: { a: { type: 'number' }, b: { type: 'number' } },
+              required: ['a', 'b'],
+              type: 'object',
+            },
+            name: 'add',
+            outputSchema: {
+              $schema: 'http://json-schema.org/draft-07/schema#',
+              type: 'number',
+            },
+            metadata: { originalName: 'namespaced/add' },
+          },
+        ],
+        output: {},
       },
     },
     {
@@ -397,9 +156,8 @@ describe('toGenerateRequest', () => {
         messages: [
           { role: 'user', content: [{ text: 'Tell a joke about dogs.' }] },
         ],
-        candidates: undefined,
         config: undefined,
-        context: undefined,
+        docs: undefined,
         tools: [
           {
             name: 'tellAFunnyJoke',
@@ -418,7 +176,7 @@ describe('toGenerateRequest', () => {
             },
           },
         ],
-        output: { format: 'text' },
+        output: {},
       },
     },
     {
@@ -450,18 +208,17 @@ describe('toGenerateRequest', () => {
             ],
           },
         ],
-        candidates: undefined,
         config: undefined,
-        context: undefined,
+        docs: undefined,
         tools: [],
-        output: { format: 'text' },
+        output: {},
       },
     },
     {
       should: 'translate a prompt with history correctly',
       prompt: {
         model: 'vertexai/gemini-1.0-pro',
-        history: [
+        messages: [
           { content: [{ text: 'hi' }], role: 'user' },
           { content: [{ text: 'how can I help you' }], role: 'model' },
         ],
@@ -473,11 +230,10 @@ describe('toGenerateRequest', () => {
           { content: [{ text: 'how can I help you' }], role: 'model' },
           { role: 'user', content: [{ text: 'Tell a joke about dogs.' }] },
         ],
-        candidates: undefined,
         config: undefined,
-        context: undefined,
+        docs: undefined,
         tools: [],
-        output: { format: 'text' },
+        output: {},
       },
     },
     {
@@ -485,99 +241,128 @@ describe('toGenerateRequest', () => {
       prompt: {
         model: 'vertexai/gemini-1.0-pro',
         prompt: 'Tell a joke with context.',
-        context: [{ content: [{ text: 'context here' }] }],
+        docs: [{ content: [{ text: 'context here' }] }],
       },
       expectedOutput: {
         messages: [
           { content: [{ text: 'Tell a joke with context.' }], role: 'user' },
         ],
-        candidates: undefined,
         config: undefined,
-        context: [{ content: [{ text: 'context here' }] }],
+        docs: [{ content: [{ text: 'context here' }] }],
         tools: [],
-        output: { format: 'text' },
+        output: {},
       },
     },
   ];
   for (const test of testCases) {
     it(test.should, async () => {
       assert.deepStrictEqual(
-        await toGenerateRequest(test.prompt as GenerateOptions),
+        await toGenerateRequest(registry, test.prompt as GenerateOptions),
         test.expectedOutput
       );
     });
   }
 });
 
-describe('GenerateResponseChunk', () => {
-  describe('#output()', () => {
-    const testCases = [
-      {
-        should: 'parse ``` correctly',
-        accumulatedChunksTexts: ['```'],
-        correctJson: null,
-      },
-      {
-        should: 'parse valid json correctly',
-        accumulatedChunksTexts: [`{"foo":"bar"}`],
-        correctJson: { foo: 'bar' },
-      },
-      {
-        should: 'if json invalid, return null',
-        accumulatedChunksTexts: [`invalid json`],
-        correctJson: null,
-      },
-      {
-        should: 'handle missing closing brace',
-        accumulatedChunksTexts: [`{"foo":"bar"`],
-        correctJson: { foo: 'bar' },
-      },
-      {
-        should: 'handle missing closing bracket in nested object',
-        accumulatedChunksTexts: [`{"foo": {"bar": "baz"`],
-        correctJson: { foo: { bar: 'baz' } },
-      },
-      {
-        should: 'handle multiple chunks',
-        accumulatedChunksTexts: [`{"foo": {"bar"`, `: "baz`],
-        correctJson: { foo: { bar: 'baz' } },
-      },
-      {
-        should: 'handle multiple chunks with nested objects',
-        accumulatedChunksTexts: [`\`\`\`json{"foo": {"bar"`, `: {"baz": "qux`],
-        correctJson: { foo: { bar: { baz: 'qux' } } },
-      },
-      {
-        should: 'handle array nested in object',
-        accumulatedChunksTexts: [`{"foo": ["bar`],
-        correctJson: { foo: ['bar'] },
-      },
-      {
-        should: 'handle array nested in object with multiple chunks',
-        accumulatedChunksTexts: [`\`\`\`json{"foo": {"bar"`, `: ["baz`],
-        correctJson: { foo: { bar: ['baz'] } },
-      },
-    ];
+describe('generate', () => {
+  let registry: Registry;
+  var echoModel: ModelAction;
 
-    for (const test of testCases) {
-      if (test.should) {
-        it(test.should, () => {
-          const accumulatedChunks: GenerateResponseChunkData[] =
-            test.accumulatedChunksTexts.map((text, index) => ({
-              index,
-              content: [{ text }],
-            }));
-
-          const chunkData = accumulatedChunks[accumulatedChunks.length - 1];
-
-          const responseChunk: GenerateResponseChunk =
-            new GenerateResponseChunk(chunkData, accumulatedChunks);
-
-          const output = responseChunk.output();
-
-          assert.deepStrictEqual(output, test.correctJson);
-        });
+  beforeEach(() => {
+    registry = new Registry();
+    echoModel = defineModel(
+      registry,
+      {
+        name: 'echoModel',
+      },
+      async (request) => {
+        return {
+          message: {
+            role: 'model',
+            content: [
+              {
+                text:
+                  'Echo: ' +
+                  request.messages
+                    .map((m) => m.content.map((c) => c.text).join())
+                    .join(),
+              },
+            ],
+          },
+          finishReason: 'stop',
+        };
       }
-    }
+    );
+  });
+
+  it('applies middleware', async () => {
+    const wrapRequest: ModelMiddleware = async (req, next) => {
+      return next({
+        ...req,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                text:
+                  '(' +
+                  req.messages
+                    .map((m) => m.content.map((c) => c.text).join())
+                    .join() +
+                  ')',
+              },
+            ],
+          },
+        ],
+      });
+    };
+    const wrapResponse: ModelMiddleware = async (req, next) => {
+      const res = await next(req);
+      return {
+        message: {
+          role: 'model',
+          content: [
+            {
+              text: '[' + res.message!.content.map((c) => c.text).join() + ']',
+            },
+          ],
+        },
+        finishReason: res.finishReason,
+      };
+    };
+
+    const response = await generate(registry, {
+      prompt: 'banana',
+      model: echoModel,
+      use: [wrapRequest, wrapResponse],
+    });
+    const want = '[Echo: (banana)]';
+    assert.deepStrictEqual(response.text, want);
+  });
+});
+
+describe('generate', () => {
+  let registry: Registry;
+  beforeEach(() => {
+    registry = new Registry();
+
+    defineModel(
+      registry,
+      { name: 'echo', supports: { tools: true } },
+      async (input) => ({
+        message: input.messages[0],
+        finishReason: 'stop',
+      })
+    );
+  });
+  it('should preserve the request in the returned response, enabling .messages', async () => {
+    const response = await generate(registry, {
+      model: 'echo',
+      prompt: 'Testing messages',
+    });
+    assert.deepEqual(
+      response.messages.map((m) => m.content[0].text),
+      ['Testing messages', 'Testing messages']
+    );
   });
 });

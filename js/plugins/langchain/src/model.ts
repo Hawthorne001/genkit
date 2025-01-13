@@ -14,21 +14,26 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { ModelAction, ModelArgument } from '@genkit-ai/ai/model';
-import { logger } from '@genkit-ai/core/logging';
 import { LLMResult } from '@langchain/core/outputs';
+import { Genkit, ModelArgument } from 'genkit';
+import { logger } from 'genkit/logging';
+import { ModelAction } from 'genkit/model';
 import { CallbackManagerForLLMRun } from 'langchain/callbacks';
 import { BaseLLM } from 'langchain/llms/base';
 
-export function genkitModel(model: ModelArgument, config?: any): BaseLLM {
-  return new ModelAdapter(model, config);
+export function genkitModel(
+  ai: Genkit,
+  model: ModelArgument,
+  config?: any
+): BaseLLM {
+  return new ModelAdapter(ai, model, config);
 }
 
 class ModelAdapter extends BaseLLM {
   resolvedModel?: ModelAction;
 
   constructor(
+    private ai: Genkit,
     private model: ModelArgument,
     private config?: any
   ) {
@@ -47,7 +52,7 @@ class ModelAdapter extends BaseLLM {
     //options
     const ress = await Promise.all(
       prompts.map((p) =>
-        generate({
+        this.ai.generate({
           model: this.model,
           prompt: p,
           config: this.config,
@@ -56,7 +61,7 @@ class ModelAdapter extends BaseLLM {
     );
 
     return {
-      generations: ress.map((r) => [{ text: r.text() }]),
+      generations: ress.map((r) => [{ text: r.text }]),
     };
   }
 

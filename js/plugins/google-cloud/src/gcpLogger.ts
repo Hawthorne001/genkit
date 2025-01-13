@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
-import { LoggerConfig } from '@genkit-ai/core';
 import { LoggingWinston } from '@google-cloud/logging-winston';
+import { getCurrentEnv } from 'genkit';
+import { logger } from 'genkit/logging';
 import { Writable } from 'stream';
-import { PluginOptions } from './index.js';
+import { GcpTelemetryConfig } from './types.js';
+import { loggingDenied, loggingDeniedHelpText } from './utils.js';
 
 /**
  * Additional streams for writing log data to. Useful for unit testing.
@@ -25,15 +27,11 @@ import { PluginOptions } from './index.js';
 let additionalStream: Writable;
 
 /**
- * Provides a {LoggerConfig} for exporting Genkit debug logs to GCP Cloud
+ * Provides a logger for exporting Genkit debug logs to GCP Cloud
  * logs.
  */
-export class GcpLogger implements LoggerConfig {
-  private readonly options: PluginOptions;
-
-  constructor(options?: PluginOptions) {
-    this.options = options || {};
-  }
+export class GcpLogger {
+  constructor(private readonly config: GcpTelemetryConfig) {}
 
   async getLogger(env: string) {
     // Dynamically importing winston here more strictly controls
@@ -54,10 +52,13 @@ export class GcpLogger implements LoggerConfig {
     transports.push(
       this.shouldExport(env)
         ? new LoggingWinston({
-            projectId: this.options.projectId,
+            projectId: this.config.projectId,
             labels: { module: 'genkit' },
             prefix: 'genkit',
             logName: 'genkit_log',
+            credentials: this.config.credentials,
+            autoRetry: true,
+            defaultCallback: await this.getErrorHandler(),
           })
         : new winston.transports.Console()
     );
@@ -66,18 +67,50 @@ export class GcpLogger implements LoggerConfig {
         new winston.transports.Stream({ stream: additionalStream })
       );
     }
-
     return winston.createLogger({
       transports: transports,
       ...format,
+      exceptionHandlers: [new winston.transports.Console()],
     });
   }
 
-  private shouldExport(env: string) {
-    return this.options.telemetryConfig?.forceDevExport || env !== 'dev';
+  private async getErrorHandler(): Promise<(err: Error | null) => void> {
+    // only log the first time
+    let instructionsLogged = false;
+    let helpInstructions = await loggingDeniedHelpText();
+
+    return async (err: Error | null) => {
+      // Use the defaultLogger so that logs don't get swallowed by
+      // the open telemetry exporter
+      const defaultLogger = logger.defaultLogger;
+      if (err && loggingDenied(err)) {
+        if (!instructionsLogged) {
+          instructionsLogged = true;
+          defaultLogger.error(
+            `Unable to send logs to Google Cloud: ${err.message}\n\n${helpInstructions}\n`
+          );
+        }
+      } else if (err) {
+        defaultLogger.error(`Unable to send logs to Google Cloud: ${err}`);
+      }
+
+      if (err) {
+        // Assume the logger is compromised, and we need a new one
+        // Reinitialize the genkit logger with a new instance with the same config
+        logger.init(
+          await new GcpLogger(this.config).getLogger(getCurrentEnv())
+        );
+        defaultLogger.info('Initialized a new GcpLogger.');
+      }
+    };
+  }
+
+  private shouldExport(env?: string) {
+    return this.config.export;
   }
 }
 
+/** @hidden */
 export function __addTransportStreamForTesting(stream: Writable) {
   additionalStream = stream;
 }

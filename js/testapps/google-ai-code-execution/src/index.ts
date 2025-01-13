@@ -15,21 +15,16 @@
  */
 
 import { config } from 'dotenv';
-import * as z from 'zod';
 config();
 // Import the Genkit core libraries and plugins.
-import { generate } from '@genkit-ai/ai';
-import { configureGenkit } from '@genkit-ai/core';
-import { defineFlow } from '@genkit-ai/flow';
 import { gemini15Flash, googleAI } from '@genkit-ai/googleai';
+import { genkit, z } from 'genkit';
 
-configureGenkit({
+const ai = genkit({
   plugins: [googleAI()],
-  logLevel: 'debug',
-  enableTracingAndMetrics: true,
 });
 
-export const codeExecutionFlow = defineFlow(
+export const codeExecutionFlow = ai.defineFlow(
   {
     name: 'codeExecutionFlow',
     inputSchema: z.string(),
@@ -48,7 +43,7 @@ export const codeExecutionFlow = defineFlow(
   async (task: string) => {
     // Construct a request and send it to the model API.
     const prompt = `Write and execute some code for ${task}`;
-    const llmResponse = await generate({
+    const llmResponse = await ai.generate({
       model: gemini15Flash,
       prompt: prompt,
       config: {
@@ -57,7 +52,7 @@ export const codeExecutionFlow = defineFlow(
       },
     });
 
-    const parts = llmResponse.candidates[0].message.content;
+    const parts = llmResponse.message!.content;
 
     const executableCodePart = parts.find(
       (part) => part.custom && part.custom.executableCode
@@ -84,7 +79,7 @@ export const codeExecutionFlow = defineFlow(
         outcome,
         output,
       },
-      text: llmResponse.text(),
+      text: llmResponse.text,
     };
   }
 );

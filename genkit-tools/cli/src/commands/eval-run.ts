@@ -14,31 +14,30 @@
  * limitations under the License.
  */
 
-import { EvalInput, EvalResponse } from '@genkit-ai/tools-common';
+import { Action, EvalInputDataset } from '@genkit-ai/tools-common';
 import {
   EvalExporter,
-  enrichResultsWithScoring,
-  extractMetricsMetadata,
-  getEvalStore,
+  getAllEvaluatorActions,
   getExporterForString,
+  getMatchingEvaluatorActions,
+  runEvaluation,
 } from '@genkit-ai/tools-common/eval';
 import {
   confirmLlmUse,
-  evaluatorName,
-  isEvaluator,
+  generateTestCaseId,
+  loadEvalInputDataset,
   logger,
-  runInRunnerThenStop,
 } from '@genkit-ai/tools-common/utils';
 import { Command } from 'commander';
-import { randomUUID } from 'crypto';
-import { readFile } from 'fs/promises';
+import { runWithManager } from '../utils/manager-utils';
 
-interface EvalRunOptions {
+interface EvalRunCliOptions {
   output?: string;
   evaluators?: string;
   force?: boolean;
   outputFormat: string;
 }
+
 /** Command to run evaluation on a dataset. */
 export const evalRun = new Command('eval:run')
   .description('evaluate provided dataset against configured evaluators')
@@ -50,7 +49,6 @@ export const evalRun = new Command('eval:run')
     '--output <filename>',
     'name of the output file to write evaluation results. Defaults to json output.'
   )
-  // TODO: Figure out why passing a new Option with choices doesn't work
   .option(
     '--output-format <format>',
     'The output file format (csv, json)',
@@ -61,90 +59,61 @@ export const evalRun = new Command('eval:run')
     'comma separated list of evaluators to use (by default uses all)'
   )
   .option('--force', 'Automatically accept all interactive prompts')
-  .action(async (dataset: string, options: EvalRunOptions) => {
-    await runInRunnerThenStop(async (runner) => {
-      const evalStore = getEvalStore();
-      const exportFn: EvalExporter = getExporterForString(options.outputFormat);
-
-      logger.debug(`Loading data from '${dataset}'...`);
-      const evalDataset: EvalInput[] = JSON.parse(
-        (await readFile(dataset)).toString('utf-8')
-      ).map((testCase: any) => ({
-        ...testCase,
-        testCaseId: testCase.testCaseId || randomUUID(),
-        traceIds: testCase.traceIds || [],
-      }));
-
-      const allActions = await runner.listActions();
-      const allEvaluatorActions = [];
-      for (const key in allActions) {
-        if (isEvaluator(key)) {
-          allEvaluatorActions.push(allActions[key]);
-        }
+  .action(async (dataset: string, options: EvalRunCliOptions) => {
+    await runWithManager(async (manager) => {
+      if (!dataset) {
+        throw new Error(
+          'No input data passed. Specify input data using [data] argument'
+        );
       }
 
-      const filteredEvaluatorActions = allEvaluatorActions.filter(
-        (action) =>
-          !options.evaluators ||
-          options.evaluators.split(',').includes(action.name)
-      );
-      if (filteredEvaluatorActions.length === 0) {
-        if (allEvaluatorActions.length == 0) {
-          logger.error('No evaluators installed');
-        } else {
-          logger.error(
-            `No evaluators matched your specifed filter: ${options.evaluators}`
-          );
-          logger.info(
-            `All available evaluators: ${allEvaluatorActions.map((action) => action.name).join(',')}`
-          );
-        }
-        return;
+      let evaluatorActions: Action[];
+      if (!options.evaluators) {
+        evaluatorActions = await getAllEvaluatorActions(manager);
+      } else {
+        const evalActionKeys = options.evaluators
+          .split(',')
+          .map((k) => `/evaluator/${k}`);
+        evaluatorActions = await getMatchingEvaluatorActions(
+          manager,
+          evalActionKeys
+        );
       }
       logger.info(
-        `Using evaluators: ${filteredEvaluatorActions.map((action) => action.name).join(',')}`
+        `Using evaluators: ${evaluatorActions.map((action) => action.name).join(',')}`
       );
 
-      const confirmed = await confirmLlmUse(
-        filteredEvaluatorActions,
-        options.force
-      );
-      if (!confirmed) {
-        return;
+      if (!options.force) {
+        const confirmed = await confirmLlmUse(evaluatorActions);
+        if (!confirmed) {
+          if (!confirmed) {
+            throw new Error('User declined using billed evaluators.');
+          }
+        }
       }
 
-      const scores: Record<string, EvalResponse> = {};
-      const evalRunId = randomUUID();
-      for (const action of filteredEvaluatorActions) {
-        const name = evaluatorName(action);
-        logger.info(`Running evaluator '${name}'...`);
-        const response = await runner.runAction({
-          key: name,
-          input: {
-            dataset: evalDataset,
-            evalRunId,
-          },
-        });
-        scores[name] = response.result as EvalResponse;
-      }
-
-      const scoredResults = enrichResultsWithScoring(scores, evalDataset);
-      const metadata = extractMetricsMetadata(filteredEvaluatorActions);
-
-      const evalRun = {
-        key: {
-          evalRunId,
-          createdAt: new Date().toISOString(),
-        },
-        results: scoredResults,
-        metricsMetadata: metadata,
-      };
-
-      logger.info(`Writing results to EvalStore...`);
-      await evalStore.save(evalRun);
+      const evalDataset: EvalInputDataset = (
+        await loadEvalInputDataset(dataset)
+      ).map((testCase: any) => ({
+        ...testCase,
+        testCaseId: testCase.testCaseId || generateTestCaseId(),
+        traceIds: testCase.traceIds || [],
+      }));
+      const evalRun = await runEvaluation({
+        manager,
+        evaluatorActions,
+        evalDataset,
+      });
 
       if (options.output) {
+        const exportFn: EvalExporter = getExporterForString(
+          options.outputFormat
+        );
         await exportFn(evalRun, options.output);
       }
+
+      console.log(
+        `Succesfully ran evaluation, with evalId: ${evalRun.key.evalRunId}`
+      );
     });
   });

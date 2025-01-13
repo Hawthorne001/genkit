@@ -14,29 +14,27 @@
  * limitations under the License.
  */
 
-import { generate } from '@genkit-ai/ai';
-import { retrieve } from '@genkit-ai/ai/retriever';
 import { devLocalRetrieverRef } from '@genkit-ai/dev-local-vectorstore';
-import { defineFlow } from '@genkit-ai/flow';
-import { geminiPro } from '@genkit-ai/vertexai';
-import * as z from 'zod';
+import { gemini15Flash } from '@genkit-ai/vertexai';
+import { z } from 'genkit';
+import { ai } from './index.js';
 
 // Define the retriever reference
 export const menuRetriever = devLocalRetrieverRef('menuQA');
 
-export const menuQAFlow = defineFlow(
+export const menuQAFlow = ai.defineFlow(
   { name: 'menuQA', inputSchema: z.string(), outputSchema: z.string() },
   async (input: string) => {
     // retrieve relevant documents
-    const docs = await retrieve({
+    const docs = await ai.retrieve({
       retriever: menuRetriever,
       query: input,
       options: { k: 3 },
     });
 
     // generate a response
-    const llmResponse = await generate({
-      model: geminiPro,
+    const llmResponse = await ai.generate({
+      model: gemini15Flash,
       prompt: `
     You are acting as a helpful AI assistant that can answer 
     questions about the food available on the menu at Genkit Grub Pub.
@@ -47,10 +45,10 @@ export const menuQAFlow = defineFlow(
 
     Question: ${input}
     `,
-      context: docs,
+      docs,
     });
 
-    const output = llmResponse.text();
+    const output = llmResponse.text;
     return output;
   }
 );

@@ -44,7 +44,7 @@ const EvaluationExtractorSchema = z.record(
   z.union([
     z.string(), // specify the displayName (default to output)
     StepSelectorSchema, //, {inputOf: 'my-step-name'}
-    z.function().args(TraceDataSchema).returns(z.string()), // custom trace extractor
+    z.function().args(TraceDataSchema).returns(z.any()), // custom trace extractor
   ])
 );
 export type EvaluationExtractor = z.infer<typeof EvaluationExtractorSchema>;
@@ -55,7 +55,7 @@ export function isEvalField(input: string): input is EvalField {
 }
 
 const EvaluatorConfig = z.object({
-  flowName: z
+  actionRef: z
     .string()
     .describe('specify which flow this config is for')
     .optional(),

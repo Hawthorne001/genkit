@@ -15,7 +15,13 @@
  */
 
 import { Document } from '../document.js';
-import { MessageData, ModelInfo, ModelMiddleware, Part } from '../model.js';
+import {
+  MediaPart,
+  MessageData,
+  ModelInfo,
+  ModelMiddleware,
+  Part,
+} from '../model.js';
 
 /**
  * Preprocess a GenerateRequest to download referenced http(s) media URLs and
@@ -23,6 +29,7 @@ import { MessageData, ModelInfo, ModelMiddleware, Part } from '../model.js';
  */
 export function downloadRequestMedia(options?: {
   maxBytes?: number;
+  filter?: (part: MediaPart) => boolean;
 }): ModelMiddleware {
   return async (req, next) => {
     const { default: fetch } = await import('node-fetch');
@@ -33,8 +40,13 @@ export function downloadRequestMedia(options?: {
         req.messages.map(async (message) => {
           const content: Part[] = await Promise.all(
             message.content.map(async (part) => {
-              // skip non-media parts and non-http urls
-              if (!part.media || !part.media.url.startsWith('http')) {
+              // skip non-media parts and non-http urls, or parts that have been
+              // filtered out by user config
+              if (
+                !part.media ||
+                !part.media.url.startsWith('http') ||
+                (options?.filter && !options?.filter(part))
+              ) {
                 return part;
               }
 
@@ -107,12 +119,12 @@ export function validateSupport(options: {
       invalid('tool use, but tools were provided');
     if (supports.multiturn === false && req.messages.length > 1)
       invalid(`multiple messages, but ${req.messages.length} were provided`);
-    if (
-      typeof supports.output !== 'undefined' &&
-      req.output?.format &&
-      !supports.output.includes(req.output?.format)
-    )
-      invalid(`requested output format '${req.output?.format}'`);
+    // if (
+    //   typeof supports.output !== 'undefined' &&
+    //   req.output?.format &&
+    //   !supports.output.includes(req.output?.format)
+    // )
+    //   invalid(`requested output format '${req.output?.format}'`);
     return next();
   };
 }
@@ -123,49 +135,6 @@ function lastUserMessage(messages: MessageData[]) {
       return messages[i];
     }
   }
-}
-
-export function conformOutput(): ModelMiddleware {
-  return async (req, next) => {
-    const lastMessage = lastUserMessage(req.messages);
-    if (!lastMessage) return next(req);
-    const outputPartIndex = lastMessage.content.findIndex(
-      (p) => p.metadata?.purpose === 'output'
-    );
-    const outputPart =
-      outputPartIndex >= 0 ? lastMessage.content[outputPartIndex] : undefined;
-
-    if (!req.output?.schema || (outputPart && !outputPart?.metadata?.pending)) {
-      return next(req);
-    }
-
-    const instructions = `
-
-Output should be in JSON format and conform to the following schema:
-
-\`\`\`
-${JSON.stringify(req.output!.schema!)}
-\`\`\`
-`;
-
-    if (outputPart) {
-      lastMessage.content[outputPartIndex] = {
-        ...outputPart,
-        metadata: {
-          purpose: 'output',
-          source: 'default',
-        },
-        text: instructions,
-      } as Part;
-    } else {
-      lastMessage?.content.push({
-        text: instructions,
-        metadata: { purpose: 'output', source: 'default' },
-      });
-    }
-
-    return next(req);
-  };
 }
 
 /**
@@ -218,7 +187,7 @@ const CONTEXT_ITEM_TEMPLATE = (
   } else if (options?.citationKey === undefined) {
     out += `[${d.metadata?.['ref'] || d.metadata?.['id'] || index}]: `;
   }
-  out += d.text() + '\n';
+  out += d.text + '\n';
   return out;
 };
 
@@ -230,7 +199,7 @@ export function augmentWithContext(
   const itemTemplate = options?.itemTemplate || CONTEXT_ITEM_TEMPLATE;
   return (req, next) => {
     // if there is no context in the request, no-op
-    if (!req.context?.length) return next(req);
+    if (!req.docs?.length) return next(req);
     const userMessage = lastUserMessage(req.messages);
     // if there are no messages, no-op
     if (!userMessage) return next(req);
@@ -245,7 +214,7 @@ export function augmentWithContext(
       return next(req);
     }
     let out = `${preface || ''}`;
-    req.context?.forEach((d, i) => {
+    req.docs?.forEach((d, i) => {
       out += itemTemplate(new Document(d), i, options);
     });
     out += '\n';

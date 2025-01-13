@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import z from 'zod';
+import { z } from '@genkit-ai/core';
 
 const EmptyPartSchema = z.object({
   text: z.never().optional(),
@@ -70,7 +70,7 @@ export class Document implements DocumentData {
    * Concatenates all `text` parts present in the document with no delimiter.
    * @returns A string of all concatenated text parts.
    */
-  text(): string {
+  get text(): string {
     return this.content.map((part) => part.text || '').join('');
   }
 
@@ -79,7 +79,7 @@ export class Document implements DocumentData {
    * (for example) an image.
    * @returns The first detected `media` part in the document.
    */
-  media(): { url: string; contentType?: string } | null {
+  get media(): { url: string; contentType?: string } | null {
     return this.content.find((part) => part.media)?.media || null;
   }
 

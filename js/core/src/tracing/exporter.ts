@@ -23,14 +23,21 @@ import {
 import { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { logger } from '../logging.js';
 import { deleteUndefinedProps } from '../utils.js';
-import { SpanData, TraceData, TraceStore } from './types.js';
+import { SpanData, TraceData } from './types.js';
+
+export let telemetryServerUrl: string | undefined;
 
 /**
- * Exports collected OpenTelemetetry spans to Firestore.
+ * @hidden
  */
-export class TraceStoreExporter implements SpanExporter {
-  constructor(private traceStore: TraceStore) {}
+export function setTelemetryServerUrl(url: string) {
+  telemetryServerUrl = url;
+}
 
+/**
+ * Exports collected OpenTelemetetry spans to the telemetry server.
+ */
+export class TraceServerExporter implements SpanExporter {
   /**
    * Export spans.
    * @param spans
@@ -119,7 +126,7 @@ export class TraceStoreExporter implements SpanExporter {
         await this.save(traceId, traces[traceId]);
       } catch (e) {
         error = true;
-        logger.error('Failed to save trace ${traceId}', e);
+        logger.error(`Failed to save trace ${traceId}`, e);
       }
       if (done) {
         return done({
@@ -130,6 +137,12 @@ export class TraceStoreExporter implements SpanExporter {
   }
 
   private async save(traceId, spans: ReadableSpan[]): Promise<void> {
+    if (!telemetryServerUrl) {
+      logger.debug(
+        `Telemetry server is not configured, trace ${traceId} not saved!`
+      );
+      return;
+    }
     // TODO: add interface for Firestore doc
     const data = {
       traceId,
@@ -144,7 +157,14 @@ export class TraceStoreExporter implements SpanExporter {
         data.endTime = convertedSpan.endTime;
       }
     }
-    await this.traceStore.save(traceId, data);
+    await fetch(`${telemetryServerUrl}/api/traces`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
   }
 }
 

@@ -14,56 +14,14 @@
  * limitations under the License.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as z from 'zod';
 import { Action } from './action.js';
-import { FlowStateStore } from './flowTypes.js';
 import { logger } from './logging.js';
 import { PluginProvider } from './plugin.js';
-import { startReflectionApi } from './reflectionApi.js';
 import { JSONSchema } from './schema.js';
-import { TraceStore } from './tracing/types.js';
 
 export type AsyncProvider<T> = () => Promise<T>;
-
-const ACTIONS_BY_ID = 'genkit__ACTIONS_BY_ID';
-const TRACE_STORES_BY_ENV = 'genkit__TRACE_STORES_BY_ENV';
-const FLOW_STATE_STORES_BY_ENV = 'genkit__FLOW_STATE_STORES_BY_ENV';
-const PLUGINS_BY_NAME = 'genkit__PLUGINS_BY_NAME';
-const SCHEMAS_BY_NAME = 'genkit__SCHEMAS_BY_NAME';
-
-function actionsById(): Record<string, Action<z.ZodTypeAny, z.ZodTypeAny>> {
-  if (global[ACTIONS_BY_ID] === undefined) {
-    global[ACTIONS_BY_ID] = {};
-  }
-  return global[ACTIONS_BY_ID];
-}
-function traceStoresByEnv(): Record<string, AsyncProvider<TraceStore>> {
-  if (global[TRACE_STORES_BY_ENV] === undefined) {
-    global[TRACE_STORES_BY_ENV] = {};
-  }
-  return global[TRACE_STORES_BY_ENV];
-}
-function flowStateStoresByEnv(): Record<string, AsyncProvider<FlowStateStore>> {
-  if (global[FLOW_STATE_STORES_BY_ENV] === undefined) {
-    global[FLOW_STATE_STORES_BY_ENV] = {};
-  }
-  return global[FLOW_STATE_STORES_BY_ENV];
-}
-function pluginsByName(): Record<string, PluginProvider> {
-  if (global[PLUGINS_BY_NAME] === undefined) {
-    global[PLUGINS_BY_NAME] = {};
-  }
-  return global[PLUGINS_BY_NAME];
-}
-function schemasByName(): Record<
-  string,
-  { schema?: z.ZodTypeAny; jsonSchema?: JSONSchema }
-> {
-  if (global[SCHEMAS_BY_NAME] === undefined) {
-    global[SCHEMAS_BY_NAME] = {};
-  }
-  return global[SCHEMAS_BY_NAME];
-}
 
 /**
  * Type of a runnable action.
@@ -77,22 +35,16 @@ export type ActionType =
   | 'flow'
   | 'model'
   | 'prompt'
-  | 'tool';
+  | 'util'
+  | 'tool'
+  | 'reranker';
 
 /**
- * Looks up a registry key (action type and key) in the registry.
+ * A schema is either a Zod schema or a JSON schema.
  */
-export async function lookupAction<
-  I extends z.ZodTypeAny,
-  O extends z.ZodTypeAny,
-  R extends Action<I, O>,
->(key: string): Promise<R> {
-  // If we don't see the key in the registry we try to initialize the plugin first.
-  const pluginName = parsePluginName(key);
-  if (!actionsById()[key] && pluginName) {
-    await initializePlugin(pluginName);
-  }
-  return actionsById()[key] as R;
+export interface Schema {
+  schema?: z.ZodTypeAny;
+  jsonSchema?: JSONSchema;
 }
 
 function parsePluginName(registryKey: string) {
@@ -103,152 +55,210 @@ function parsePluginName(registryKey: string) {
   return undefined;
 }
 
-/**
- * Registers an action in the registry.
- */
-export function registerAction<I extends z.ZodTypeAny, O extends z.ZodTypeAny>(
-  type: ActionType,
-  action: Action<I, O>
-) {
-  logger.info(`Registering ${type}: ${action.__action.name}`);
-  const key = `/${type}/${action.__action.name}`;
-  if (actionsById().hasOwnProperty(key)) {
-    logger.warn(
-      `WARNING: ${key} already has an entry in the registry. Overwriting.`
-    );
-  }
-  actionsById()[key] = action;
-}
-
 type ActionsRecord = Record<string, Action<z.ZodTypeAny, z.ZodTypeAny>>;
 
 /**
- * Returns all actions in the registry.
+ * The registry is used to store and lookup actions, trace stores, flow state stores, plugins, and schemas.
  */
-export async function listActions(): Promise<ActionsRecord> {
-  for (const pluginName of Object.keys(pluginsByName())) {
-    await initializePlugin(pluginName);
+export class Registry {
+  private actionsById: Record<string, Action<z.ZodTypeAny, z.ZodTypeAny>> = {};
+  private pluginsByName: Record<string, PluginProvider> = {};
+  private schemasByName: Record<string, Schema> = {};
+  private valueByTypeAndName: Record<string, Record<string, any>> = {};
+  private allPluginsInitialized = false;
+
+  readonly asyncStore = new AsyncStore();
+
+  constructor(public parent?: Registry) {}
+
+  /**
+   * Creates a new registry overlaid onto the provided registry.
+   * @param parent The parent registry.
+   * @returns The new overlaid registry.
+   */
+  static withParent(parent: Registry) {
+    return new Registry(parent);
   }
-  return Object.assign({}, actionsById());
-}
 
-/**
- * Registers a trace store provider for the given environment.
- */
-export function registerTraceStore(
-  env: string,
-  traceStoreProvider: AsyncProvider<TraceStore>
-) {
-  traceStoresByEnv()[env] = traceStoreProvider;
-}
-
-const traceStoresByEnvCache: Record<any, Promise<TraceStore>> = {};
-
-/**
- * Looks up the trace store for the given environment.
- */
-export async function lookupTraceStore(
-  env: string
-): Promise<TraceStore | undefined> {
-  if (!traceStoresByEnv()[env]) {
-    return undefined;
+  /**
+   * Looks up an action in the registry.
+   * @param key The key of the action to lookup.
+   * @returns The action.
+   */
+  async lookupAction<
+    I extends z.ZodTypeAny,
+    O extends z.ZodTypeAny,
+    R extends Action<I, O>,
+  >(key: string): Promise<R> {
+    // If we don't see the key in the registry we try to initialize the plugin first.
+    const pluginName = parsePluginName(key);
+    if (!this.actionsById[key] && pluginName) {
+      await this.initializePlugin(pluginName);
+    }
+    return (this.actionsById[key] as R) || this.parent?.lookupAction(key);
   }
-  const cached = traceStoresByEnvCache[env];
-  if (!cached) {
-    const newStore = traceStoresByEnv()[env]();
-    traceStoresByEnvCache[env] = newStore;
-    return newStore;
-  }
-  return cached;
-}
 
-/**
- * Registers a flow state store provider for the given environment.
- */
-export function registerFlowStateStore(
-  env: string,
-  flowStateStoreProvider: AsyncProvider<FlowStateStore>
-) {
-  flowStateStoresByEnv()[env] = flowStateStoreProvider;
-}
-
-const flowStateStoresByEnvCache: Record<any, Promise<FlowStateStore>> = {};
-/**
- * Looks up the flow state store for the given environment.
- */
-export async function lookupFlowStateStore(
-  env: string
-): Promise<FlowStateStore | undefined> {
-  if (!flowStateStoresByEnv()[env]) {
-    return undefined;
+  /**
+   * Registers an action in the registry.
+   * @param type The type of the action to register.
+   * @param action The action to register.
+   */
+  registerAction<I extends z.ZodTypeAny, O extends z.ZodTypeAny>(
+    type: ActionType,
+    action: Action<I, O>
+  ) {
+    const key = `/${type}/${action.__action.name}`;
+    logger.debug(`registering ${key}`);
+    if (this.actionsById.hasOwnProperty(key)) {
+      // TODO: Make this an error!
+      logger.warn(
+        `WARNING: ${key} already has an entry in the registry. Overwriting.`
+      );
+    }
+    this.actionsById[key] = action;
   }
-  const cached = flowStateStoresByEnvCache[env];
-  if (!cached) {
-    const newStore = flowStateStoresByEnv()[env]();
-    flowStateStoresByEnvCache[env] = newStore;
-    return newStore;
-  }
-  return cached;
-}
 
-/**
- * Registers a flow state store for the given environment.
- */
-export function registerPluginProvider(name: string, provider: PluginProvider) {
-  let cached;
-  pluginsByName()[name] = {
-    name: provider.name,
-    initializer: () => {
-      if (cached) {
+  /**
+   * Returns all actions in the registry.
+   * @returns All actions in the registry.
+   */
+  async listActions(): Promise<ActionsRecord> {
+    await this.initializeAllPlugins();
+    return {
+      ...(await this.parent?.listActions()),
+      ...this.actionsById,
+    };
+  }
+
+  /**
+   * Initializes all plugins in the registry.
+   */
+  async initializeAllPlugins() {
+    if (this.allPluginsInitialized) {
+      return;
+    }
+    for (const pluginName of Object.keys(this.pluginsByName)) {
+      await this.initializePlugin(pluginName);
+    }
+    this.allPluginsInitialized = true;
+  }
+
+  /**
+   * Registers a plugin provider. This plugin must be initialized before it can be used by calling {@link initializePlugin} or {@link initializeAllPlugins}.
+   * @param name The name of the plugin to register.
+   * @param provider The plugin provider.
+   */
+  registerPluginProvider(name: string, provider: PluginProvider) {
+    if (this.pluginsByName[name]) {
+      throw new Error(`Plugin ${name} already registered`);
+    }
+    this.allPluginsInitialized = false;
+    let cached;
+    let isInitialized = false;
+    this.pluginsByName[name] = {
+      name: provider.name,
+      initializer: () => {
+        if (!isInitialized) {
+          cached = provider.initializer();
+          isInitialized = true;
+        }
         return cached;
-      }
-      cached = provider.initializer();
-      return cached;
-    },
-  };
-}
-
-export function lookupPlugin(name: string) {
-  return pluginsByName()[name];
-}
-
-/**
- *
- */
-export async function initializePlugin(name: string) {
-  if (pluginsByName()[name]) {
-    return await pluginsByName()[name].initializer();
+      },
+    };
   }
-  return undefined;
-}
 
-export function registerSchema(
-  name: string,
-  data: { schema?: z.ZodTypeAny; jsonSchema?: JSONSchema }
-) {
-  schemasByName()[name] = data;
-}
+  /**
+   * Looks up a plugin.
+   * @param name The name of the plugin to lookup.
+   * @returns The plugin provider.
+   */
+  lookupPlugin(name: string): PluginProvider | undefined {
+    return this.pluginsByName[name] || this.parent?.lookupPlugin(name);
+  }
 
-export function lookupSchema(name: string) {
-  return schemasByName()[name];
+  /**
+   * Initializes a plugin already registered with {@link registerPluginProvider}.
+   * @param name The name of the plugin to initialize.
+   * @returns The plugin.
+   */
+  async initializePlugin(name: string) {
+    if (this.pluginsByName[name]) {
+      return await this.pluginsByName[name].initializer();
+    }
+  }
+
+  /**
+   * Registers a schema.
+   * @param name The name of the schema to register.
+   * @param data The schema to register (either a Zod schema or a JSON schema).
+   */
+  registerSchema(name: string, data: Schema) {
+    if (this.schemasByName[name]) {
+      throw new Error(`Schema ${name} already registered`);
+    }
+    this.schemasByName[name] = data;
+  }
+
+  registerValue(type: string, name: string, value: any) {
+    if (!this.valueByTypeAndName[type]) {
+      this.valueByTypeAndName[type] = {};
+    }
+    this.valueByTypeAndName[type][name] = value;
+  }
+
+  async lookupValue<T = unknown>(
+    type: string,
+    key: string
+  ): Promise<T | undefined> {
+    const pluginName = parsePluginName(key);
+    if (!this.valueByTypeAndName[type]?.[key] && pluginName) {
+      await this.initializePlugin(pluginName);
+    }
+    return (
+      (this.valueByTypeAndName[type]?.[key] as T) ||
+      this.parent?.lookupValue(type, key)
+    );
+  }
+
+  async listValues<T>(type: string): Promise<Record<string, T>> {
+    await this.initializeAllPlugins();
+    return {
+      ...((await this.parent?.listValues(type)) || {}),
+      ...(this.valueByTypeAndName[type] || {}),
+    } as Record<string, T>;
+  }
+
+  /**
+   * Looks up a schema.
+   * @param name The name of the schema to lookup.
+   * @returns The schema.
+   */
+  lookupSchema(name: string): Schema | undefined {
+    return this.schemasByName[name] || this.parent?.lookupSchema(name);
+  }
 }
 
 /**
- * Development mode only. Starts a Reflection API so that the actions can be called by the Runner.
+ * Manages AsyncLocalStorage instances in a single place.
  */
-if (process.env.GENKIT_ENV === 'dev') {
-  startReflectionApi();
+export class AsyncStore {
+  private asls: Record<string, AsyncLocalStorage<any>> = {};
+
+  getStore<T>(key: string): T | undefined {
+    return this.asls[key]?.getStore();
+  }
+
+  run<T, R>(key: string, store: T, callback: () => R): R {
+    if (!this.asls[key]) {
+      this.asls[key] = new AsyncLocalStorage<T>();
+    }
+    return this.asls[key].run(store, callback);
+  }
 }
 
-export function __hardResetRegistryForTesting() {
-  delete global[ACTIONS_BY_ID];
-  delete global[TRACE_STORES_BY_ENV];
-  delete global[FLOW_STATE_STORES_BY_ENV];
-  delete global[PLUGINS_BY_NAME];
-  deleteAll(flowStateStoresByEnvCache);
-  deleteAll(traceStoresByEnvCache);
-}
-
-function deleteAll(map: Record<any, any>) {
-  Object.keys(map).forEach((key) => delete map[key]);
+/**
+ * An object that has a reference to Genkit Registry.
+ */
+export interface HasRegistry {
+  get registry(): Registry;
 }

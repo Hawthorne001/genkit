@@ -19,20 +19,31 @@ import addFormats from 'ajv-formats';
 import { z } from 'zod';
 import zodToJsonSchema from 'zod-to-json-schema';
 import { GenkitError } from './error.js';
-import { registerSchema } from './registry.js';
+import { Registry } from './registry.js';
 const ajv = new Ajv();
 addFormats(ajv);
 
 export { z }; // provide a consistent zod to use throughout genkit
+
+/**
+ * JSON schema.
+ */
 export type JSONSchema = JSONSchemaType<any> | any;
+
 const jsonSchemas = new WeakMap<z.ZodTypeAny, JSONSchema>();
 const validators = new WeakMap<JSONSchema, ReturnType<typeof ajv.compile>>();
 
+/**
+ * Wrapper object for various ways schema can be provided.
+ */
 export interface ProvidedSchema {
   jsonSchema?: JSONSchema;
   schema?: z.ZodTypeAny;
 }
 
+/**
+ * Schema validation error.
+ */
 export class ValidationError extends GenkitError {
   constructor({
     data,
@@ -72,6 +83,9 @@ export function toJsonSchema({
   return outSchema as JSONSchema;
 }
 
+/**
+ * Schema validation error details.
+ */
 export interface ValidationErrorDetail {
   path: string;
   message: string;
@@ -84,10 +98,16 @@ function toErrorDetail(error: ErrorObject): ValidationErrorDetail {
   };
 }
 
+/**
+ * Validation response.
+ */
 export type ValidationResponse =
   | { valid: true; errors: never }
   | { valid: false; errors: ErrorObject[] };
 
+/**
+ * Validates the provided data against the provided schema.
+ */
 export function validateSchema(
   data: unknown,
   options: ProvidedSchema
@@ -102,6 +122,9 @@ export function validateSchema(
   return { valid, errors: errors?.map(toErrorDetail), schema: toValidate };
 }
 
+/**
+ * Parses raw data object agaisnt the provided schema.
+ */
 export function parseSchema<T = unknown>(
   data: unknown,
   options: ProvidedSchema
@@ -111,15 +134,30 @@ export function parseSchema<T = unknown>(
   return data as T;
 }
 
+/**
+ * Registers provided schema as a named schema object in the Genkit registry.
+ *
+ * @hidden
+ */
 export function defineSchema<T extends z.ZodTypeAny>(
+  registry: Registry,
   name: string,
   schema: T
 ): T {
-  registerSchema(name, { schema });
+  registry.registerSchema(name, { schema });
   return schema;
 }
 
-export function defineJsonSchema(name: string, jsonSchema: JSONSchema) {
-  registerSchema(name, { jsonSchema });
+/**
+ * Registers provided JSON schema as a named schema object in the Genkit registry.
+ *
+ * @hidden
+ */
+export function defineJsonSchema(
+  registry: Registry,
+  name: string,
+  jsonSchema: JSONSchema
+) {
+  registry.registerSchema(name, { jsonSchema });
   return jsonSchema;
 }

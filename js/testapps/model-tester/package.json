@@ -1,0 +1,30 @@
+{
+  "name": "model-tester",
+  "version": "1.0.0",
+  "description": "",
+  "main": "lib/index.js",
+  "scripts": {
+    "start": "node lib/index.js",
+    "compile": "tsc",
+    "build": "pnpm build:clean && pnpm compile",
+    "build:clean": "rimraf ./lib",
+    "build:watch": "tsc --watch",
+    "build-and-run": "pnpm build && node lib/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "genkit": "workspace:*",
+    "@genkit-ai/googleai": "workspace:*",
+    "@genkit-ai/vertexai": "workspace:*",
+    "@google/generative-ai": "^0.15.0",
+    "colorette": "^2.0.20",
+    "genkitx-ollama": "workspace:*",
+    "genkitx-openai": "^0.10.1"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "^5.3.3"
+  }
+}

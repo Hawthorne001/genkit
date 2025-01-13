@@ -55,10 +55,10 @@ Genkit provides a CLI and a local UI to streamline your AI development workflow.
 
 ### CLI
 
-The Genkit CLI is the quickest way to start a new Genkit project. It also includes commands for running and evaluating your Genkit functions (flows).
+The Genkit CLI includes commands for running and evaluating your Genkit functions (flows) and collecting telemetry and logs.
 
 - **Install:** `npm i -g genkit`
-- **Initialize a new project:** `genkit init`
+- **Run a command, wrapped with telemetry, a interactive developer UI, etc:** `genkit start -- <command to run your code>`
 
 ### Developer UI
 
@@ -82,23 +82,36 @@ Extend Genkit with plugins for specific AI models, vector databases, and platfor
 Create and share your own plugins:
 
 - **Write Node.js plugins:** [Plugin Authoring Guide](https://firebase.google.com/docs/genkit/plugin-authoring)
-- **Write Go plugins:** (Documentation coming soon)
+- **Write Go plugins:** [Plugin Authoring Guide](https://firebase.google.com/docs/genkit-go/plugin-authoring)
 
 Find excellent examples of community-built plugins for OpenAI, Anthropic, Cohere, and more in this [repository](https://github.com/TheFireCo/genkit-plugins).
 
 ## Try Genkit on IDX
 
-<img src="docs/resources/idx-logo.png" width="50" alt="Project IDX logo">
+Want to skip the local setup? Click below to try out Genkit using [Project IDX](https://idx.dev), Google's AI-assisted workspace for full-stack app development in the cloud.
 
-Want to try Genkit without a local setup? [Explore it on Project IDX](https://idx.google.com/new/genkit), Google's AI-assisted workspace for full-stack app development in the cloud.
+<a href="https://idx.google.com/new/genkit">
+  <img
+    height="32"
+    alt="Try in IDX"
+    src="https://cdn.idx.dev/btn/try_purple_32.svg">
+</a>
+
+## Sample apps
+
+Take a look at some samples of Genkit in use:
+
+- ["AI barista"](https://github.com/firebase/quickstart-nodejs/tree/master/genkit/js-coffee-shop) -- demonstrates simple LLM usage
+- [A simple chatbot with a JavaScript frontend](https://github.com/firebase/quickstart-nodejs/tree/master/genkit/chatbot) -- add history to LLM sessions
+- [Restaurant menu Q&A app](https://github.com/firebase/quickstart-nodejs/tree/master/genkit/js-menu) -- this sample shows progressively
+  more sophisticated versions of a menu understanding app.
+- [Streaming to an Angular frontend](https://github.com/firebase/quickstart-nodejs/tree/master/genkit/js-angular)
 
 ## Connect with us
 
 - **Join the community:** Stay updated, ask questions, and share your work with other Genkit users on our [Discord server](https://discord.gg/qXt5zzQKpc).
 
 - **Provide feedback:** Report issues or suggest new features using our GitHub [issue tracker](https://github.com/firebase/genkit/issues).
-
-- **Engage in discussions:** Participate in conversations about Genkit on our [GitHub Discussions](https://github.com/firebase/genkit/discussions) forum.
 
 ## Contributing
 

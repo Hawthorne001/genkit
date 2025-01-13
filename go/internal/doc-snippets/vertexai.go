@@ -16,40 +16,46 @@ package snippets
 
 import (
 	"context"
+	"log"
 
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/vertexai"
 )
 
 func vertexaiEx(ctx context.Context) error {
-	var err error
+	g, err := genkit.New(nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// [START init]
-	if err := vertexai.Init(ctx, nil); err != nil {
+	if err := vertexai.Init(ctx, g, nil); err != nil {
 		return err
 	}
 	// [END init]
 
 	yourProjectID := ""
 	// [START initproj]
-	if err := vertexai.Init(ctx, &vertexai.Config{ProjectID: yourProjectID}); err != nil {
+	if err := vertexai.Init(ctx, g, &vertexai.Config{ProjectID: yourProjectID}); err != nil {
 		return err
 	}
 	// [END initproj]
 
 	// [START initloc]
-	if err := vertexai.Init(ctx, &vertexai.Config{Location: "asia-south1"}); err != nil {
+	if err := vertexai.Init(ctx, g, &vertexai.Config{Location: "asia-south1"}); err != nil {
 		return err
 	}
 	// [END initloc]
 
 	// [START model]
-	langModel := vertexai.Model("gemini-1.5-flash")
+	langModel := vertexai.Model(g, "gemini-1.5-flash")
 	// [END model]
 
 	// [START gen]
-	genRes, err := langModel.Generate(ctx, ai.NewGenerateRequest(
-		nil, ai.NewUserTextMessage("Tell me a joke.")), nil)
+	genRes, err := genkit.GenerateText(ctx, g,
+		ai.WithModel(langModel),
+		ai.WithTextPrompt("Tell me a joke."))
 	if err != nil {
 		return err
 	}
@@ -60,13 +66,11 @@ func vertexaiEx(ctx context.Context) error {
 	var userInput string
 
 	// [START embedder]
-	embeddingModel := vertexai.Embedder("text-embedding-004")
+	embeddingModel := vertexai.Embedder(g, "text-embedding-004")
 	// [END embedder]
 
 	// [START embed]
-	embedRes, err := embeddingModel.Embed(ctx, &ai.EmbedRequest{
-		Documents: []*ai.Document{ai.DocumentFromText(userInput, nil)},
-	})
+	embedRes, err := ai.Embed(ctx, embeddingModel, ai.WithEmbedText(userInput))
 	if err != nil {
 		return err
 	}
@@ -74,12 +78,10 @@ func vertexaiEx(ctx context.Context) error {
 
 	_ = embedRes
 
-	var myRetriever *ai.Retriever
+	var myRetriever ai.Retriever
 
 	// [START retrieve]
-	retrieveRes, err := myRetriever.Retrieve(ctx, &ai.RetrieverRequest{
-		Document: ai.DocumentFromText(userInput, nil),
-	})
+	retrieveRes, err := ai.Retrieve(ctx, myRetriever, ai.WithRetrieverText(userInput))
 	if err != nil {
 		return err
 	}
@@ -87,11 +89,11 @@ func vertexaiEx(ctx context.Context) error {
 
 	_ = retrieveRes
 
-	var myIndexer *ai.Indexer
+	var myIndexer ai.Indexer
 	var docsToIndex []*ai.Document
 
 	// [START index]
-	if err := myIndexer.Index(ctx, &ai.IndexerRequest{Documents: docsToIndex}); err != nil {
+	if err := ai.Index(ctx, myIndexer, ai.WithIndexerDocs(docsToIndex...)); err != nil {
 		return err
 	}
 	// [END index]

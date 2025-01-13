@@ -17,22 +17,28 @@
 import assert from 'node:assert';
 import { beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
-import { action } from '../src/action.js';
-import { __hardResetRegistryForTesting } from '../src/registry.js';
+import { action, defineAction } from '../src/action.js';
+import { Registry } from '../src/registry.js';
 
 describe('action', () => {
-  beforeEach(__hardResetRegistryForTesting);
+  var registry: Registry;
+  beforeEach(() => {
+    registry = new Registry();
+  });
 
   it('applies middleware', async () => {
     const act = action(
+      registry,
       {
         name: 'foo',
         inputSchema: z.string(),
         outputSchema: z.number(),
         use: [
           async (input, next) => (await next(input + 'middle1')) + 1,
-          async (input, next) => (await next(input + 'middle2')) + 2,
+          async (input, opts, next) =>
+            (await next(input + 'middle2', opts)) + 2,
         ],
+        actionType: 'util',
       },
       async (input) => {
         return input.length;
@@ -43,5 +49,99 @@ describe('action', () => {
       await act('foo'),
       20 // "foomiddle1middle2".length + 1 + 2
     );
+  });
+
+  it('returns telemetry info', async () => {
+    const act = action(
+      registry,
+      {
+        name: 'foo',
+        inputSchema: z.string(),
+        outputSchema: z.number(),
+        use: [
+          async (input, next) => (await next(input + 'middle1')) + 1,
+          async (input, opts, next) =>
+            (await next(input + 'middle2', opts)) + 2,
+        ],
+        actionType: 'util',
+      },
+      async (input) => {
+        return input.length;
+      }
+    );
+
+    const result = await act.run('foo');
+    assert.strictEqual(
+      result.result,
+      20 // "foomiddle1middle2".length + 1 + 2
+    );
+    assert.strictEqual(result.telemetry !== null, true);
+    assert.strictEqual(
+      result.telemetry.traceId !== null && result.telemetry.traceId.length > 0,
+      true
+    );
+    assert.strictEqual(
+      result.telemetry.spanId !== null && result.telemetry.spanId.length > 0,
+      true
+    );
+  });
+
+  it('run the action with options', async () => {
+    let passedContext;
+    const act = action(
+      registry,
+      {
+        name: 'foo',
+        inputSchema: z.string(),
+        outputSchema: z.number(),
+        actionType: 'util',
+      },
+      async (input, { sendChunk, context }) => {
+        passedContext = context;
+        sendChunk(1);
+        sendChunk(2);
+        sendChunk(3);
+        return input.length;
+      }
+    );
+
+    const chunks: any[] = [];
+    await act.run('1234', {
+      context: { foo: 'bar' },
+      onChunk: (c) => chunks.push(c),
+    });
+
+    assert.deepStrictEqual(passedContext, {
+      foo: 'bar',
+    });
+
+    assert.deepStrictEqual(chunks, [1, 2, 3]);
+  });
+
+  it('should stream the response', async () => {
+    const action = defineAction(
+      registry,
+      { name: 'hello', actionType: 'custom' },
+      async (input, { sendChunk }) => {
+        sendChunk({ count: 1 });
+        sendChunk({ count: 2 });
+        sendChunk({ count: 3 });
+        return `hi ${input}`;
+      }
+    );
+
+    const response = action.stream('Pavel');
+
+    const gotChunks: any[] = [];
+    for await (const chunk of response.stream) {
+      gotChunks.push(chunk);
+    }
+
+    assert.equal(await response.output, 'hi Pavel');
+    assert.deepStrictEqual(gotChunks, [
+      { count: 1 },
+      { count: 2 },
+      { count: 3 },
+    ]);
   });
 });

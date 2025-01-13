@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { Action, defineAction } from '@genkit-ai/core';
+import { Action, defineAction, z } from '@genkit-ai/core';
 import { logger } from '@genkit-ai/core/logging';
-import { lookupAction } from '@genkit-ai/core/registry';
+import { Registry } from '@genkit-ai/core/registry';
 import { SPAN_TYPE_ATTR, runInNewSpan } from '@genkit-ai/core/tracing';
-import * as z from 'zod';
+import { randomUUID } from 'crypto';
 
 export const ATTR_PREFIX = 'genkit';
 export const SPAN_STATE_ATTR = ATTR_PREFIX + ':state';
@@ -32,7 +32,19 @@ export const BaseDataPointSchema = z.object({
   traceIds: z.array(z.string()).optional(),
 });
 
+// DataPoint that is to be used for actions. This needs testCaseId to be present.
+export const BaseEvalDataPointSchema = BaseDataPointSchema.extend({
+  testCaseId: z.string(),
+});
+export type BaseEvalDataPoint = z.infer<typeof BaseEvalDataPointSchema>;
+
 export const ScoreSchema = z.object({
+  id: z
+    .string()
+    .describe(
+      'Optional ID to differentiate different scores if applying in a single evaluation'
+    )
+    .optional(),
   score: z.union([z.number(), z.string(), z.boolean()]).optional(),
   // TODO: use StatusSchema
   error: z.string().optional(),
@@ -57,21 +69,22 @@ export type Dataset<
 
 export const EvalResponseSchema = z.object({
   sampleIndex: z.number().optional(),
-  testCaseId: z.string().optional(),
+  testCaseId: z.string(),
   traceId: z.string().optional(),
   spanId: z.string().optional(),
-  evaluation: ScoreSchema,
+  evaluation: z.union([ScoreSchema, z.array(ScoreSchema)]),
 });
 export type EvalResponse = z.infer<typeof EvalResponseSchema>;
 
 export const EvalResponsesSchema = z.array(EvalResponseSchema);
 export type EvalResponses = z.infer<typeof EvalResponsesSchema>;
 
-type EvaluatorFn<
-  DataPoint extends typeof BaseDataPointSchema = typeof BaseDataPointSchema,
+export type EvaluatorFn<
+  EvalDataPoint extends
+    typeof BaseEvalDataPointSchema = typeof BaseEvalDataPointSchema,
   CustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
 > = (
-  input: z.infer<DataPoint>,
+  input: z.infer<EvalDataPoint>,
   evaluatorOptions?: z.infer<CustomOptions>
 ) => Promise<EvalResponse>;
 
@@ -99,16 +112,30 @@ function withMetadata<
 
 const EvalRequestSchema = z.object({
   dataset: z.array(BaseDataPointSchema),
+  evalRunId: z.string(),
   options: z.unknown(),
 });
+
+export interface EvaluatorParams<
+  DataPoint extends typeof BaseDataPointSchema = typeof BaseDataPointSchema,
+  CustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
+> {
+  evaluator: EvaluatorArgument<DataPoint, CustomOptions>;
+  dataset: Dataset<DataPoint>;
+  evalRunId?: string;
+  options?: z.infer<CustomOptions>;
+}
 
 /**
  * Creates evaluator action for the provided {@link EvaluatorFn} implementation.
  */
 export function defineEvaluator<
   DataPoint extends typeof BaseDataPointSchema = typeof BaseDataPointSchema,
+  EvalDataPoint extends
+    typeof BaseEvalDataPointSchema = typeof BaseEvalDataPointSchema,
   EvaluatorOptions extends z.ZodTypeAny = z.ZodTypeAny,
 >(
+  registry: Registry,
   options: {
     name: string;
     displayName: string;
@@ -117,7 +144,7 @@ export function defineEvaluator<
     configSchema?: EvaluatorOptions;
     isBilled?: boolean;
   },
-  runner: EvaluatorFn<DataPoint, EvaluatorOptions>
+  runner: EvaluatorFn<EvalDataPoint, EvaluatorOptions>
 ) {
   const metadata = {};
   metadata[EVALUATOR_METADATA_KEY_IS_BILLED] =
@@ -125,6 +152,7 @@ export function defineEvaluator<
   metadata[EVALUATOR_METADATA_KEY_DISPLAY_NAME] = options.displayName;
   metadata[EVALUATOR_METADATA_KEY_DEFINITION] = options.definition;
   const evaluator = defineAction(
+    registry,
     {
       actionType: 'evaluator',
       name: options.name,
@@ -141,9 +169,13 @@ export function defineEvaluator<
     async (i) => {
       let evalResponses: EvalResponses = [];
       for (let index = 0; index < i.dataset.length; index++) {
-        const datapoint = i.dataset[index];
+        const datapoint: BaseEvalDataPoint = {
+          ...i.dataset[index],
+          testCaseId: i.dataset[index].testCaseId ?? randomUUID(),
+        };
         try {
           await runInNewSpan(
+            registry,
             {
               metadata: {
                 name: `Test Case ${datapoint.testCaseId}`,
@@ -217,22 +249,20 @@ export type EvaluatorArgument<
  */
 export async function evaluate<
   DataPoint extends typeof BaseDataPointSchema = typeof BaseDataPointSchema,
-  EvaluatorOptions extends z.ZodTypeAny = z.ZodTypeAny,
->(params: {
-  evaluator: EvaluatorArgument<DataPoint, EvaluatorOptions>;
-  dataset: Dataset<DataPoint>;
-  options?: z.infer<EvaluatorOptions>;
-}): Promise<EvalResponses> {
-  let evaluator: EvaluatorAction<DataPoint, EvaluatorOptions>;
+  CustomOptions extends z.ZodTypeAny = z.ZodTypeAny,
+>(
+  registry: Registry,
+  params: EvaluatorParams<DataPoint, CustomOptions>
+): Promise<EvalResponses> {
+  let evaluator: EvaluatorAction<DataPoint, CustomOptions>;
   if (typeof params.evaluator === 'string') {
-    evaluator = await lookupAction(`/evaluator/${params.evaluator}`);
+    evaluator = await registry.lookupAction(`/evaluator/${params.evaluator}`);
   } else if (Object.hasOwnProperty.call(params.evaluator, 'info')) {
-    evaluator = await lookupAction(`/evaluator/${params.evaluator.name}`);
+    evaluator = await registry.lookupAction(
+      `/evaluator/${params.evaluator.name}`
+    );
   } else {
-    evaluator = params.evaluator as EvaluatorAction<
-      DataPoint,
-      EvaluatorOptions
-    >;
+    evaluator = params.evaluator as EvaluatorAction<DataPoint, CustomOptions>;
   }
   if (!evaluator) {
     throw new Error('Unable to utilize the provided evaluator');
@@ -240,6 +270,7 @@ export async function evaluate<
   return (await evaluator({
     dataset: params.dataset,
     options: params.options,
+    evalRunId: params.evalRunId ?? randomUUID(),
   })) as EvalResponses;
 }
 

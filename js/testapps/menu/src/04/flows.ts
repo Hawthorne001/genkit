@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-import { Document, index, retrieve } from '@genkit-ai/ai/retriever';
 import {
   devLocalIndexerRef,
   devLocalRetrieverRef,
 } from '@genkit-ai/dev-local-vectorstore';
-import { defineFlow } from '@genkit-ai/flow';
-import * as z from 'zod';
-
+import { Document, z } from 'genkit';
+import { ai } from '../genkit.js';
 import {
   AnswerOutputSchema,
   MenuItem,
@@ -32,7 +30,7 @@ import { s04_ragDataMenuPrompt } from './prompts.js';
 
 // Define a flow which indexes items on the menu.
 
-export const s04_indexMenuItemsFlow = defineFlow(
+export const s04_indexMenuItemsFlow = ai.defineFlow(
   {
     name: 's04_indexMenuItems',
     inputSchema: z.array(MenuItemSchema),
@@ -45,7 +43,7 @@ export const s04_indexMenuItemsFlow = defineFlow(
       const text = `${menuItem.title} ${menuItem.price} \n ${menuItem.description}`;
       return Document.fromText(text, menuItem);
     });
-    await index({
+    await ai.index({
       indexer: devLocalIndexerRef('menu-items'),
       documents,
     });
@@ -58,7 +56,7 @@ export const s04_indexMenuItemsFlow = defineFlow(
 // View this flow's trace to see the context that was retrieved,
 // and how it was included in the prompt.
 
-export const s04_ragMenuQuestionFlow = defineFlow(
+export const s04_ragMenuQuestionFlow = ai.defineFlow(
   {
     name: 's04_ragMenuQuestion',
     inputSchema: MenuQuestionInputSchema,
@@ -66,7 +64,7 @@ export const s04_ragMenuQuestionFlow = defineFlow(
   },
   async (input) => {
     // Retrieve the 3 most relevant menu items for the question
-    const docs = await retrieve({
+    const docs = await ai.retrieve({
       retriever: devLocalRetrieverRef('menu-items'),
       query: input.question,
       options: { k: 3 },
@@ -76,12 +74,10 @@ export const s04_ragMenuQuestionFlow = defineFlow(
     );
 
     // Generate the response
-    const response = await s04_ragDataMenuPrompt.generate({
-      input: {
-        menuData: menuData,
-        question: input.question,
-      },
+    const response = await s04_ragDataMenuPrompt({
+      menuData: menuData,
+      question: input.question,
     });
-    return { answer: response.text() };
+    return { answer: response.text };
   }
 );

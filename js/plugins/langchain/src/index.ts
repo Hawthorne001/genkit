@@ -14,14 +14,10 @@
  * limitations under the License.
  */
 
-import { EvaluatorAction } from '@genkit-ai/ai';
-import {
-  GenerationCommonConfigSchema,
-  ModelArgument,
-} from '@genkit-ai/ai/model';
-import { Plugin, genkitPlugin } from '@genkit-ai/core';
+import { EvaluatorAction, Genkit, ModelArgument, z } from 'genkit';
+import { GenerationCommonConfigSchema } from 'genkit/model';
+import { GenkitPlugin, genkitPlugin } from 'genkit/plugin';
 import { Criteria } from 'langchain/evaluation';
-import z from 'zod';
 import { langchainEvaluator } from './evaluators';
 
 export { GenkitTracer } from './tracing.js';
@@ -37,14 +33,14 @@ interface LangchainPluginParams<
   };
 }
 
-export const langchain: Plugin<[LangchainPluginParams]> = genkitPlugin(
-  'langchain',
-  async (params: LangchainPluginParams) => {
+export function langchain(params: LangchainPluginParams): GenkitPlugin {
+  return genkitPlugin('langchain', async (ai: Genkit) => {
     const evaluators: EvaluatorAction[] = [];
     if (params.evaluators) {
       for (const criteria of params.evaluators.criteria ?? []) {
         evaluators.push(
           langchainEvaluator(
+            ai,
             'criteria',
             criteria,
             params.evaluators.judge,
@@ -55,6 +51,7 @@ export const langchain: Plugin<[LangchainPluginParams]> = genkitPlugin(
       for (const criteria of params.evaluators.labeledCriteria ?? []) {
         evaluators.push(
           langchainEvaluator(
+            ai,
             'labeled_criteria',
             criteria,
             params.evaluators.judge,
@@ -63,8 +60,5 @@ export const langchain: Plugin<[LangchainPluginParams]> = genkitPlugin(
         );
       }
     }
-    return {
-      evaluators,
-    };
-  }
-);
+  });
+}
